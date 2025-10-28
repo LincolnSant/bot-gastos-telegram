@@ -73,7 +73,7 @@ async def send_message(chat_id: int, text: str):
         except Exception as e:
             print(f"Erro ao enviar mensagem: {e}")
 
-# --- NOSSO ENDPOINT DE WEBHOOK (COM CORREÇÃO DE BUG V3) ---
+# --- NOSSO ENDPOINT DE WEBHOOK (COM /zerartudo) ---
 @app.post("/webhook")
 async def webhook(update: Update):
     chat_id = update.message.chat.id
@@ -93,21 +93,21 @@ async def webhook(update: Update):
         if texto_lower == "/start":
             resposta = f"Olá, <b>{nome_usuario}</b>! 👋\n\n"
             resposta += "Para anotar um gasto, envie:\n"
-            resposta += "<code>VALOR CATEGORIA (descrição)</code>\n"
-            resposta += "<b>Exemplo:</b> <code>15.50 padaria</code>\n\n"
+            resposta += "<code>VALOR CATEGORIA (descrição)</code>\n\n"
             resposta += "Para ver seu resumo, envie:\n"
             resposta += "<code>/relatorio</code>\n\n"
             resposta += "Para ver os últimos gastos, envie:\n"
             resposta += "<code>/listar</code>\n\n"
             resposta += "Para apagar um gasto, envie:\n"
-            resposta += "<code>/deletar [ID_DO_GASTO]</code>"
+            resposta += "<code>/deletar [ID]</code>\n\n"
+            resposta += "Para APAGAR TUDO, envie:\n"
+            resposta += "<code>/zerartudo</code>"
 
         # --- LÓGICA DO /RELATORIO ---
         elif texto_lower == "/relatorio":
             consulta = db.query(
                 Gasto.categoria, func.sum(Gasto.valor)
             ).group_by(Gasto.categoria).all()
-            
             total_geral = 0
             resposta = "📊 <b>Relatório de Gastos por Categoria</b> 📊\n\n"
             if not consulta:
@@ -119,46 +119,22 @@ async def webhook(update: Update):
                 resposta += "\n----------------------\n"
                 resposta += f"<b>TOTAL GERAL: R$ {total_geral:.2f}</b>"
 
-        # --- (LÓGICA DO /LISTAR SUPER DEFENSIVA) ---
+        # --- (LÓGICA DO /LISTAR CORRIGIDA) ---
         elif texto_lower == "/listar":
             consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(10).all()
-            
             resposta = "📋 <b>Últimos 10 Gastos Registrados</b> 📋\n\n"
             if not consulta:
                 resposta += "Nenhum gasto registrado ainda."
             else:
                 for gasto in consulta:
-                    try:
-                        # --- (CORREÇÃO SUPER DEFENSIVA) ---
-                        data_formatada = "Data não registrada"
-                        if gasto.data_criacao is not None:
-                            try:
-                                data_formatada = gasto.data_criacao.strftime('%d/%m/%Y %H:%M')
-                            except Exception:
-                                data_formatada = "Erro de data" # Se strftime falhar
-                        
-                        gasto_id = str(gasto.id)
-                        
-                        gasto_valor = "???"
-                        if gasto.valor is not None:
-                            gasto_valor = f"{gasto.valor:.2f}"
-                        
-                        gasto_categoria = "N/A"
-                        if gasto.categoria is not None:
-                            gasto_categoria = str(gasto.categoria)
-
-                        resposta += f"<b>ID: {gasto_id}</b> | R$ {gasto_valor} | {gasto_categoria}\n"
-                        
-                        if gasto.descricao is not None:
-                            resposta += f"   └ <i>{str(gasto.descricao)}</i>\n"
-                        
-                        resposta += f"   <small>({data_formatada})</small>\n\n"
-                        # --- (FIM DA CORREÇÃO SUPER DEFENSIVA) ---
+                    data_formatada = "Data não registrada"
+                    if gasto.data_criacao:
+                        data_formatada = gasto.data_criacao.strftime('%d/%m/%Y %H:%M')
                     
-                    except Exception as e:
-                        # Se algo INESPERADO acontecer, loga e avisa o usuário
-                        print(f"ERRO CRÍTICO NO /LISTAR AO PROCESSAR GASTO ID {gasto.id}: {e}")
-                        resposta += f"⚠️ Erro ao processar o Gasto ID {gasto.id}\n\n"
+                    resposta += f"<b>ID: {gasto.id}</b> | R$ {gasto.valor:.2f} | {gasto.categoria}\n"
+                    if gasto.descricao:
+                        resposta += f"   └ <i>{gasto.descricao}</i>\n"
+                    resposta += f"   <small>({data_formatada})</small>\n\n"
 
         # --- LÓGICA DO /DELETAR ---
         elif texto_lower.startswith("/deletar "):
@@ -166,18 +142,32 @@ async def webhook(update: Update):
                 partes = texto.split()
                 id_para_deletar = int(partes[1])
                 gasto = db.query(Gasto).filter(Gasto.id == id_para_deletar).first()
-                
                 if gasto:
                     db.delete(gasto)
                     db.commit()
                     resposta = f"✅ Gasto com <b>ID {id_para_deletar}</b> (R$ {gasto.valor:.2f}) foi deletado."
                 else:
                     resposta = f"❌ Gasto com <b>ID {id_para_deletar}</b> não encontrado."
-
             except (IndexError, ValueError):
                 resposta = "❌ Formato inválido. Use <code>/deletar [NÚMERO_ID]</code>\n"
                 resposta += "Use <code>/listar</code> para ver os IDs."
-
+        
+        # --- (NOVO) LÓGICA DO /ZERARTUDO ---
+        elif texto_lower.startswith("/zerartudo"):
+            partes = texto.split()
+            # Verifica se o usuário enviou "/zerartudo confirmar"
+            if len(partes) == 2 and partes[1] == "confirmar":
+                # Deleta todos os registros da tabela Gasto
+                num_deletados = db.query(Gasto).delete()
+                db.commit()
+                resposta = f"✅🔥 Todos os <b>{num_deletados}</b> gastos foram permanentemente apagados."
+            else:
+                # Se ele só enviou "/zerartudo", envia o aviso
+                resposta = "⚠️ <b>AÇÃO PERIGOSA!</b> ⚠️\n\n"
+                resposta += "Você está prestes a apagar TODOS os seus gastos.\n"
+                resposta += "Se você tem certeza, envie o comando:\n"
+                resposta += "<code>/zerartudo confirmar</code>"
+        
         # --- LÓGICA DE SALVAR GASTO (O "ELSE" FINAL) ---
         else:
             try:
@@ -186,7 +176,6 @@ async def webhook(update: Update):
                 valor_float = float(valor_str)
                 categoria = "geral" 
                 descricao = None
-                
                 if len(partes) > 1:
                     categoria = partes[1]
                 if len(partes) > 2:
@@ -195,9 +184,7 @@ async def webhook(update: Update):
                 novo_gasto = Gasto(valor=valor_float, categoria=categoria.lower(), descricao=descricao)
                 db.add(novo_gasto)
                 db.commit() 
-                
                 resposta = f"✅ Gasto salvo!\n<b>ID: {novo_gasto.id}</b>\n<b>Valor:</b> R$ {valor_float:.2f}\n<b>Categoria:</b> {categoria.lower()}"
-
             except (ValueError, IndexError):
                 resposta = "❌ Formato inválido. Tente:\n<code>VALOR CATEGORIA</code>\n"
                 resposta += "Ou envie <code>/start</code> para ver todos os comandos."
