@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+httpx
+psycopg2-binary  # <--- Este é NOVO! É o "driver" para falar com PostgreSQL
