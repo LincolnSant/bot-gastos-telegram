@@ -120,7 +120,7 @@ async def webhook(update: Update):
                 resposta += "\n----------------------\n"
                 resposta += f"<b>TOTAL GERAL: R$ {total_geral:.2f}</b>"
 
-        # --- (LÓGICA DO /LISTAR CORRIGIDA) ---
+        # --- (LÓGICA DO /LISTAR SUPER ESTÁVEL) ---
         elif texto_lower.strip() == "/listar":
             consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(10).all()
             
@@ -129,18 +129,26 @@ async def webhook(update: Update):
                 resposta += "Nenhum gasto registrado ainda."
             else:
                 for gasto in consulta:
-                    data_formatada = "Data não registrada"
-                    if gasto.data_criacao:
-                        data_formatada = gasto.data_criacao.strftime('%d/%m/%Y %H:%M')
+                    try:
+                        # Tenta formatar, se der erro, mostra uma mensagem simples
+                        data_formatada = "Sem Data"
+                        if gasto.data_criacao:
+                            data_formatada = gasto.data_criacao.strftime('%d/%m/%Y %H:%M')
+                        
+                        resposta += f"<b>ID: {gasto.id}</b> | R$ {gasto.valor:.2f} | {gasto.categoria}\n"
+                        
+                        if gasto.descricao:
+                            resposta += f"   └ <i>{gasto.descricao}</i>\n"
+                        
+                        resposta += f"   <small>({data_formatada})</small>\n\n"
                     
-                    resposta += f"<b>ID: {gasto.id}</b> | R$ {gasto.valor:.2f} | {gasto.categoria}\n"
-                    
-                    # (BUG FIX: Removido o espaço invisível)
-                    if gasto.descricao:
-                        resposta += f"   └ <i>{gasto.descricao}</i>\n"
-                    
-                    # (BUG FIX: Removido o espaço invisível)
-                    resposta += f"   <small>({data_formatada})</small>\n\n"
+                    except Exception:
+                        # Se falhar, pelo menos mostra o ID e Valor (as coisas que não quebram)
+                        resposta += f"⚠️ Erro ao exibir Gasto ID {gasto.id} (R$ {gasto.valor:.2f})\n\n"
+
+        # --- LÓGICA DO /DELETAR ---
+        elif texto_lower.startswith("/deletar"):
+            # ... resto do código do /deletar
 
         # --- LÓGICA DO /DELETAR ---
         elif texto_lower.startswith("/deletar"):
@@ -203,3 +211,4 @@ async def webhook(update: Update):
     db.close() 
     print("--------------------------------------------------")
     return {"status": "ok"}
+
