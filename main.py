@@ -4,8 +4,10 @@ from pydantic import BaseModel, Field
 from typing import Optional
 import os
 import re
+import gc
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, func
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from contextlib import contextmanager
 
 # --- CONFIGURAÇÃO ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -18,25 +20,32 @@ if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # --- CONFIGURAÇÃO DO BANCO DE DADOS ---
-engine = create_engine(DATABASE_URL)
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_size=2,        # máximo de 2 conexões abertas
+    max_overflow=0,     # evita excesso de conexões
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- DEPENDÊNCIA DE BANCO ---
+# --- DEPENDÊNCIA DE BANCO (otimizada) ---
+@contextmanager
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+        gc.collect()  # força liberação imediata de memória
 
 # --- MODELO ---
 class Gasto(Base):
     __tablename__ = "gastos"
     id = Column(Integer, primary_key=True, index=True)
     valor = Column(Float, nullable=False)
-    categoria = Column(String, index=True)
-    descricao = Column(String, nullable=True)
+    categoria = Column(String(50), index=True)       # tamanho limitado = menos espaço
+    descricao = Column(String(200), nullable=True)   # tamanho limitado
     data_criacao = Column(DateTime(timezone=True), server_default=func.now())
 
 # --- MOLDES DO TELEGRAM ---
@@ -61,24 +70,27 @@ class Update(BaseModel):
 # --- FASTAPI APP ---
 app = FastAPI()
 
-# 🔧 GARANTIR QUE AS TABELAS EXISTEM LOGO NA INICIALIZAÇÃO
-Base.metadata.create_all(bind=engine)
+# --- CLIENTE HTTP GLOBAL (menos consumo de RAM) ---
+client = httpx.AsyncClient(timeout=10)
 
+# --- INICIALIZAÇÃO ---
 @app.on_event("startup")
 def on_startup():
-    print("🔄 Verificando e criando tabelas do banco de dados...")
+    print("🔄 Otimizando banco de dados...")
     Base.metadata.create_all(bind=engine)
-    print("✅ Tabelas prontas.")
+    with engine.connect() as conn:
+        conn.execute("VACUUM;")
+        conn.execute("ANALYZE;")
+    print("✅ Banco otimizado e tabelas prontas.")
 
 # --- FUNÇÃO PARA ENVIAR MENSAGEM AO TELEGRAM ---
 async def send_message(chat_id: int, text: str):
     url = f"{TELEGRAM_API_URL}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-    async with httpx.AsyncClient() as client:
-        try:
-            await client.post(url, json=payload, timeout=10)
-        except Exception as e:
-            print(f"⚠️ Erro ao enviar mensagem: {e}")
+    try:
+        await client.post(url, json=payload)
+    except Exception as e:
+        print(f"⚠️ Erro ao enviar mensagem: {e}")
 
 # --- WEBHOOK PRINCIPAL ---
 @app.post("/webhook")
@@ -124,7 +136,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                 for categoria, total in consulta:
                     resposta += f"<b>{categoria.capitalize()}:</b> R$ {total:.2f}\n"
                     total_geral += total
-                resposta += f"\n----------------------\n<b>TOTAL GERAL: R$ {total_geral:.2f}</b>"
+                resposta += f"\n──────────────\n<b>TOTAL GERAL: R$ {total_geral:.2f}</b>"
 
         # --- /LISTAR ---
         elif texto_lower == "/listar":
@@ -137,12 +149,12 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                 resposta += "Nenhum gasto registrado ainda."
             else:
                 for gasto in consulta:
-                    print(f">>> Gasto encontrado: ID={gasto.id}, valor={gasto.valor}, categoria={gasto.categoria}")
                     data_formatada = gasto.data_criacao.strftime("%d/%m/%Y %H:%M") if gasto.data_criacao else "Sem Data"
-                    resposta += f"<b>ID: {gasto.id}</b> | R$ {gasto.valor:.2f} | {gasto.categoria}\n"
-                    if gasto.descricao:
-                        resposta += f"   └ <i>{gasto.descricao}</i>\n"
-                    resposta += f"   <small>({data_formatada})</small>\n\n"
+                    resposta += (
+                        f"<b>ID:</b> {gasto.id} | R$ {gasto.valor:.2f} | {gasto.categoria}\n"
+                        + (f"   └ <i>{gasto.descricao}</i>\n" if gasto.descricao else "")
+                        + f"   ({data_formatada})\n\n"
+                    )
 
         # --- /DELETAR ---
         elif texto_lower.startswith("/deletar"):
