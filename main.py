@@ -2,33 +2,30 @@ import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 from typing import Optional, List
-import os # <--- (NOVO) Para ler variáveis de ambiente
+import os 
 
 # --- Imports do Banco de Dados ---
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, desc # (NOVO) Importamos 'desc' para ordenar
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import func 
 # ---------------------------------
 
 
 # --- CONFIGURAÇÃO ---
-# (MUDOU) Nossas "senhas" agora vêm do ambiente do Render
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-DATABASE_URL = os.environ.get("DATABASE_URL") # O Render vai nos dar isso
+DATABASE_URL = os.environ.get("DATABASE_URL") 
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # --- Config do Banco de Dados ---
-# (MUDOU) Removemos o DATABASE_URL do sqlite
-# (MUDOU) O 'connect_args' não é mais necessário para o PostgreSQL
 engine = create_engine(DATABASE_URL) 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 # --------------------------------
 
-# (O resto do código é IDÊNTICO ao que você já tem)
 
 # 1. Cria a "aplicação" FastAPI
 app = FastAPI()
+
 
 # --- MODELO DA TABELA DO BANCO ---
 class Gasto(Base):
@@ -38,6 +35,8 @@ class Gasto(Base):
     categoria = Column(String, index=True)
     descricao = Column(String, nullable=True) 
     data_criacao = Column(DateTime(timezone=True), server_default=func.now())
+# ---------------------------------
+
 
 # --- MOLDES DO TELEGRAM (Pydantic) ---
 class User(BaseModel):
@@ -54,6 +53,8 @@ class Message(BaseModel):
 class Update(BaseModel):
     update_id: int
     message: Message
+# --- FIM DOS MOLDES ---
+
 
 # --- FUNÇÃO DE INICIALIZAÇÃO ---
 @app.on_event("startup")
@@ -72,7 +73,7 @@ async def send_message(chat_id: int, text: str):
         except Exception as e:
             print(f"Erro ao enviar mensagem: {e}")
 
-# --- NOSSO ENDPOINT DE WEBHOOK (sem mudanças na lógica) ---
+# --- NOSSO ENDPOINT DE WEBHOOK (LÓGICA REESTRUTURADA) ---
 @app.post("/webhook")
 async def webhook(update: Update):
     chat_id = update.message.chat.id
@@ -83,13 +84,30 @@ async def webhook(update: Update):
     print(f"De: {nome_usuario} | Texto: {texto}")
     
     resposta = "" 
-    db = SessionLocal() 
+    db = SessionLocal() # Abre a sessão com o banco no início
 
     if texto:
-        if texto.lower() == "/relatorio":
+        texto_lower = texto.lower()
+
+        # --- LÓGICA DO /START ---
+        if texto_lower == "/start":
+            resposta = f"Olá, <b>{nome_usuario}</b>! 👋\n\n"
+            resposta += "Para anotar um gasto, envie:\n"
+            resposta += "<code>VALOR CATEGORIA (descrição)</code>\n"
+            resposta += "<b>Exemplo:</b> <code>15.50 padaria</code>\n\n"
+            resposta += "Para ver seu resumo, envie:\n"
+            resposta += "<code>/relatorio</code>\n\n"
+            resposta += "Para ver os últimos gastos, envie:\n"
+            resposta += "<code>/listar</code>\n\n"
+            resposta += "Para apagar um gasto, envie:\n"
+            resposta += "<code>/deletar [ID_DO_GASTO]</code>"
+
+        # --- LÓGICA DO /RELATORIO ---
+        elif texto_lower == "/relatorio":
             consulta = db.query(
                 Gasto.categoria, func.sum(Gasto.valor)
             ).group_by(Gasto.categoria).all()
+            
             total_geral = 0
             resposta = "📊 <b>Relatório de Gastos por Categoria</b> 📊\n\n"
             if not consulta:
@@ -101,41 +119,76 @@ async def webhook(update: Update):
                 resposta += "\n----------------------\n"
                 resposta += f"<b>TOTAL GERAL: R$ {total_geral:.2f}</b>"
 
-        elif texto.lower() != "/start":
+        # --- (NOVO) LÓGICA DO /LISTAR ---
+        elif texto_lower == "/listar":
+            # Consulta os 10 gastos mais recentes (ordenados pelo ID decrescente)
+            consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(10).all()
+            
+            resposta = "📋 <b>Últimos 10 Gastos Registrados</b> 📋\n\n"
+            if not consulta:
+                resposta += "Nenhum gasto registrado ainda."
+            else:
+                for gasto in consulta:
+                    # Formata a data para ficar mais legível (opcional, mas bom)
+                    data_formatada = gasto.data_criacao.strftime('%d/%m/%Y %H:%M')
+                    resposta += f"<b>ID: {gasto.id}</b> | R$ {gasto.valor:.2f} | {gasto.categoria}\n"
+                    if gasto.descricao:
+                        resposta += f"   └ <i>{gasto.descricao}</i>\n"
+                    resposta += f"   <small>({data_formatada})</small>\n\n" # '<small>' é tag HTML
+
+        # --- (NOVO) LÓGICA DO /DELETAR ---
+        elif texto_lower.startswith("/deletar "):
             try:
+                # Tenta pegar o ID (ex: "/deletar 5" -> "5")
+                partes = texto.split()
+                id_para_deletar = int(partes[1])
+                
+                # Procura o gasto no banco
+                gasto = db.query(Gasto).filter(Gasto.id == id_para_deletar).first()
+                
+                if gasto:
+                    # Se achou, deleta
+                    db.delete(gasto)
+                    db.commit()
+                    resposta = f"✅ Gasto com <b>ID {id_para_deletar}</b> (R$ {gasto.valor:.2f}) foi deletado."
+                else:
+                    # Se não achou
+                    resposta = f"❌ Gasto com <b>ID {id_para_deletar}</b> não encontrado."
+
+            except (IndexError, ValueError):
+                # Se o usuário digitou "/deletar" sem número, ou "/deletar abc"
+                resposta = "❌ Formato inválido. Use <code>/deletar [NÚMERO_ID]</code>\n"
+                resposta += "Use <code>/listar</code> para ver os IDs."
+
+        # --- LÓGICA DE SALVAR GASTO (O "ELSE" FINAL) ---
+        else:
+            try:
+                # Se não for nenhum comando, tenta salvar como gasto
                 partes = texto.split()
                 valor_str = partes[0].replace(',', '.')
                 valor_float = float(valor_str)
                 categoria = "geral" 
                 descricao = None
+                
                 if len(partes) > 1:
                     categoria = partes[1]
                 if len(partes) > 2:
                     descricao = " ".join(partes[2:])
+
                 novo_gasto = Gasto(valor=valor_float, categoria=categoria.lower(), descricao=descricao)
                 db.add(novo_gasto)
                 db.commit() 
-                resposta = f"✅ Gasto salvo!\n<b>Valor:</b> R$ {valor_float:.2f}\n<b>Categoria:</b> {categoria.lower()}"
+                
+                resposta = f"✅ Gasto salvo!\n<b>ID: {novo_gasto.id}</b>\n<b>Valor:</b> R$ {valor_float:.2f}\n<b>Categoria:</b> {categoria.lower()}"
+
             except (ValueError, IndexError):
-                if texto.lower() == "/start":
-                    resposta = f"Olá, <b>{nome_usuario}</b>! 👋\n\n"
-                    resposta += "Para anotar um gasto, envie:\n"
-                    resposta += "<code>VALOR CATEGORIA (descrição)</code>\n"
-                    resposta += "<b>Exemplo:</b> <code>15.50 padaria</code>\n\n"
-                    resposta += "Para ver seu resumo, envie:\n"
-                    resposta += "<code>/relatorio</code>"
-                else:
-                    resposta = "❌ Formato inválido. Tente:\n<code>VALOR CATEGORIA</code>"
-        elif texto.lower() == "/start":
-             resposta = f"Olá, <b>{nome_usuario}</b>! 👋\n\n"
-             resposta += "Para anotar um gasto, envie:\n"
-             resposta += "<code>VALOR CATEGORIA (descrição)</code>\n"
-             resposta += "<b>Exemplo:</b> <code>15.50 padaria</code>\n\n"
-             resposta += "Para ver seu resumo, envie:\n"
-             resposta += "<code>/relatorio</code>"
+                # Se falhar (ex: "olá"), avisa o usuário
+                resposta = "❌ Formato inválido. Tente:\n<code>VALOR CATEGORIA</code>\n"
+                resposta += "Ou envie <code>/start</code> para ver todos os comandos."
         
+        # Envia a resposta final, seja ela qual for
         await send_message(chat_id, resposta)
     
-    db.close() 
+    db.close() # Fecha a sessão com o banco
     print("--------------------------------------------------")
     return {"status": "ok"}
