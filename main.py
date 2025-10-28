@@ -73,7 +73,7 @@ async def send_message(chat_id: int, text: str):
         except Exception as e:
             print(f"Erro ao enviar mensagem: {e}")
 
-# --- NOSSO ENDPOINT DE WEBHOOK (CÓDIGO FINAL) ---
+# --- NOSSO ENDPOINT DE WEBHOOK (CÓDIGO FINAL DE FUNCIONALIDADE) ---
 @app.post("/webhook")
 async def webhook(update: Update):
     chat_id = update.message.chat.id
@@ -120,22 +120,7 @@ async def webhook(update: Update):
                 resposta += "\n----------------------\n"
                 resposta += f"<b>TOTAL GERAL: R$ {total_geral:.2f}</b>"
 
-        # --- (LÓGICA DO /LISTAR SUPER ESTÁVEL) ---
-        elif texto_lower.strip() == "/listar":
-            consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(10).all()
-            
-            resposta = "📋 <b>Últimos 10 Gastos Registrados</b> 📋\n\n"
-            if not consulta:
-                resposta += "Nenhum gasto registrado ainda."
-            else:
-                for gasto in consulta:
-                    try:
-                        # Tenta formatar, se der erro, mostra uma mensagem simples
-                        data_formatada = "Sem Data"
-                        if gasto.data_criacao:
-                            data_formatada = gasto.data_criacao.strftime('%d/%m/%Y %H:%M')
-                        
-                    # --- (LÓGICA DO /LISTAR SUPER ESTÁVEL) ---
+        # --- (LÓGICA DO /LISTAR CORRIGIDA E ESTÁVEL) ---
         elif texto_lower.strip() == "/listar":
             consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(10).all()
             
@@ -156,19 +141,26 @@ async def webhook(update: Update):
                         # 3. Adicionando descrição (se existir)
                         if gasto.descricao:
                             # Use um espaço normal (não o invisível)
-                            resposta += f"  └ <i>{gasto.descricao}</i>\n"
+                            resposta += f"   └ <i>{gasto.descricao}</i>\n"
                         
                         # 4. Adicionando a data
-                        resposta += f"  <small>({data_formatada})</small>\n\n"
+                        resposta += f"   <small>({data_formatada})</small>\n\n"
                     
-                    except Exception as e:
+                    except Exception:
                         # Se algo der errado com a formatação (ex: data ou valor estranho)
-                        print(f"ERRO DE FORMATAÇÃO NO LISTAR: {e}")
                         resposta += f"⚠️ Erro ao exibir Gasto ID {gasto.id} (R$ {gasto.valor:.2f})\n\n"
-
+        
         # --- LÓGICA DO /DELETAR ---
         elif texto_lower.startswith("/deletar"):
-            # ... resto do código do /deletar
+            try:
+                partes = texto.split()
+                id_para_deletar = int(partes[1])
+                gasto = db.query(Gasto).filter(Gasto.id == id_para_deletar).first()
+                
+                if gasto:
+                    db.delete(gasto)
+                    db.commit()
+                    resposta = f"✅ Gasto com <b>ID {id_para_deletar}</b> (R$ {gasto.valor:.2f}) foi deletado."
                 else:
                     resposta = f"❌ Gasto com <b>ID {id_para_deletar}</b> não encontrado."
 
@@ -213,11 +205,8 @@ async def webhook(update: Update):
                 resposta = "❌ Formato inválido. Tente:\n<code>VALOR CATEGORIA</code>\n"
                 resposta += "Ou envie <code>/start</code> para ver todos os comandos."
         
-        # --- (CORREÇÃO DE INDENTAÇÃO FINAL - FORA DO ELSE) ---
         await send_message(chat_id, resposta)
     
     db.close() 
     print("--------------------------------------------------")
     return {"status": "ok"}
-
-
