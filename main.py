@@ -19,7 +19,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 # 🔧 CORREÇÃO AUTOMÁTICA PARA O RENDER (postgres:// → postgresql://)
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1) # Corrigido para substituir apenas uma vez
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # --- Config do Banco de Dados ---
@@ -76,11 +76,11 @@ def on_startup():
     except Exception as e:
         print(f"ERRO CRÍTICO DURANTE CRIAÇÃO DAS TABELAS: {e}")
 
-# --- FUNÇÃO DE RESPOSTA (COM PARSE_MODE OPCIONAL) ---
+# --- FUNÇÃO DE RESPOSTA (COM PARSE_MODE OPCIONAL E ERRO DETALHADO) --- # <<< CORRIGIDO AQUI
 async def send_message(chat_id: int, text: str, parse_mode: Optional[str] = "HTML"):
     url = f"{TELEGRAM_API_URL}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
-    if parse_mode:
+    if parse_mode: # Adiciona parse_mode apenas se não for None
         payload["parse_mode"] = parse_mode
 
     async with httpx.AsyncClient(timeout=10) as client:
@@ -88,9 +88,10 @@ async def send_message(chat_id: int, text: str, parse_mode: Optional[str] = "HTM
             response = await client.post(url, json=payload)
             if response.status_code != 200:
                  print(f"⚠️ Telegram API Error {response.status_code}: {response.text}")
-            response.raise_for_status()
+            response.raise_for_status() # Lança erro se for 4xx/5xx
         except httpx.HTTPStatusError as e:
             print(f"⚠️ Erro HTTP ao enviar mensagem: Status {e.response.status_code}")
+            # Se o erro for por mensagem muito longa, loga isso especificamente
             if e.response.status_code == 400 and "message is too long" in e.response.text.lower():
                 print(">>> ERRO DETECTADO: Mensagem excedeu o limite de 4096 caracteres do Telegram.")
         except Exception as e:
@@ -100,7 +101,7 @@ async def send_message(chat_id: int, text: str, parse_mode: Optional[str] = "HTM
 # --- (NOVO) FUNÇÃO DE LIMPEZA DE DADOS ---
 def limpar_gastos_antigos(db: Session):
     # Define o período de 6 meses (aprox. 180 dias)
-    dias_para_manter = 180 # Mantém por 180 dias
+    dias_para_manter = 180
     data_limite = datetime.now() - timedelta(days=dias_para_manter)
 
     # Executa o DELETE no banco de dados
@@ -126,7 +127,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
     print(f"De: {nome_usuario} | Texto: {texto}")
 
     resposta = ""
-    parse_mode_resposta = "HTML" # Padrão HTML para a maioria das respostas
+    parse_mode_para_resposta_atual = "HTML" # Padrão HTML
     mensagem_foi_enviada = False
 
     try:
@@ -141,8 +142,8 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                 resposta += "<b>Exemplo:</b> <code>15.50 padaria</code>\n"
                 resposta += "<b>Exemplo:</b> <code>100 \"lava louça\"</code>\n\n"
                 resposta += "Comandos:\n"
-                resposta += "<code>/relatorio</code> | <code>/listar</code> | <code>/deletar [ID]</code> | <code>/zerartudo confirmar</code>\n\n" # << Quebra de linha adicionada
-                resposta += "ℹ️ <i>Gastos com mais de 6 meses são removidos automaticamente.</i>"
+                resposta += "<code>/relatorio</code> | <code>/listar</code> | <code>/deletar [ID]</code> | <code>/zerartudo confirmar</code>\n\n"
+                resposta += "ℹ️ <i>Gastos com mais de 6 meses são removidos automaticamente.</i>" # Removido <small>
 
             # --- LÓGICA DO /RELATORIO ---
             elif texto_lower == "/relatorio":
@@ -157,9 +158,9 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                         total_geral += total
                     resposta += f"\n──────────\n<b>TOTAL: R$ {total_geral:.2f}</b>"
 
-            # --- LÓGICA DO /LISTAR (SEM HTML) ---
+            # --- LÓGICA DO /LISTAR (SEM HTML) --- # <<< CORRIGIDO AQUI
             elif texto_lower == "/listar":
-                parse_mode_resposta = None # Desliga HTML para esta resposta
+                parse_mode_para_resposta_atual = None # Desliga HTML para esta resposta
                 consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(5).all()
                 resposta = "📋 Últimos 5 Gastos Registrados 📋\n\n"
                 if not consulta:
@@ -232,7 +233,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                             aviso_aspas = True
                         else:
                             descricao = None
-                            if len(partes) > 1 : # Avisa mesmo se for só valor e categoria
+                            if len(partes) > 1 : # Avisa se tiver só valor e categoria
                                 aviso_aspas = True
 
 
@@ -257,17 +258,18 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
 
             # Envia a resposta SOMENTE se uma foi gerada
             if resposta:
-                print(f"-> Preparando para enviar resposta (ParseMode={parse_mode_resposta}): '{resposta[:50]}...'")
-                await send_message(chat_id, resposta, parse_mode=parse_mode_resposta)
+                print(f"-> Preparando para enviar resposta (ParseMode={parse_mode_para_resposta_atual}): '{resposta[:50]}...'")
+                # Passa o parse_mode correto para a função
+                await send_message(chat_id, resposta, parse_mode=parse_mode_para_resposta_atual)
                 mensagem_foi_enviada = True
 
     except Exception as e:
         print(f"💥 ERRO FATAL NA FUNÇÃO WEBHOOK: {e}")
         try:
+            # Tenta enviar erro com HTML padrão
             await send_message(chat_id, "❌ Desculpe, ocorreu um erro fatal no servidor. Tente novamente.")
         except:
             pass
 
     print("--------------------------------------------------")
     return {"status": "ok"}
-
