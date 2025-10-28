@@ -68,17 +68,16 @@ class Update(BaseModel):
     update_id: int
     message: Message
 
-# --- FASTAPI APP ---
-app = FastAPI()
-
-# --- CLIENTE HTTP GLOBAL (Sua otimização) ---
-client = httpx.AsyncClient(timeout=10)
-
-# --- INICIALIZAÇÃO (Com suas otimizações) ---
+# --- FUNÇÃO DE INICIALIZAÇÃO (LIMPA E CORRETA) ---
 @app.on_event("startup")
 def on_startup():
-    print("🔄 Otimizando banco de dados...")
-    Base.metadata.create_all(bind=engine)
+    print("Iniciando: Criando tabelas do banco de dados (se não existirem)...")
+    try:
+        Base.metadata.create_all(bind=engine)
+        print("Sucesso: Tabelas verificadas/criadas.")
+    except Exception as e:
+        print(f"ERRO CRÍTICO DURANTE CRIAÇÃO DAS TABELAS: {e}")
+# --- FIM DA FUNÇÃO ---
     try:
         # Usar try-except aqui é mais seguro
         with engine.connect() as conn:
@@ -250,3 +249,4 @@ async def webhook(update: Update, db: Session = Depends(get_db)): # << USA O get
 
     print("--------------------------------------------------")
     return {"status": "ok"}
+
