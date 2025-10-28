@@ -5,7 +5,7 @@ from typing import Optional, List
 import os 
 
 # --- Imports do Banco de Dados ---
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, desc # (NOVO) Importamos 'desc' para ordenar
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, desc 
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import func 
 # ---------------------------------
@@ -73,7 +73,7 @@ async def send_message(chat_id: int, text: str):
         except Exception as e:
             print(f"Erro ao enviar mensagem: {e}")
 
-# --- NOSSO ENDPOINT DE WEBHOOK (LÓGICA REESTRUTURADA) ---
+# --- NOSSO ENDPOINT DE WEBHOOK (COM CORREÇÃO DE BUG) ---
 @app.post("/webhook")
 async def webhook(update: Update):
     chat_id = update.message.chat.id
@@ -84,7 +84,7 @@ async def webhook(update: Update):
     print(f"De: {nome_usuario} | Texto: {texto}")
     
     resposta = "" 
-    db = SessionLocal() # Abre a sessão com o banco no início
+    db = SessionLocal() 
 
     if texto:
         texto_lower = texto.lower()
@@ -119,9 +119,8 @@ async def webhook(update: Update):
                 resposta += "\n----------------------\n"
                 resposta += f"<b>TOTAL GERAL: R$ {total_geral:.2f}</b>"
 
-        # --- (NOVO) LÓGICA DO /LISTAR ---
+        # --- (LÓGICA DO /LISTAR CORRIGIDA) ---
         elif texto_lower == "/listar":
-            # Consulta os 10 gastos mais recentes (ordenados pelo ID decrescente)
             consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(10).all()
             
             resposta = "📋 <b>Últimos 10 Gastos Registrados</b> 📋\n\n"
@@ -129,41 +128,40 @@ async def webhook(update: Update):
                 resposta += "Nenhum gasto registrado ainda."
             else:
                 for gasto in consulta:
-                    # Formata a data para ficar mais legível (opcional, mas bom)
-                    data_formatada = gasto.data_criacao.strftime('%d/%m/%Y %H:%M')
+                    
+                    # --- (CORREÇÃO DO BUG) ---
+                    # Verifica se data_criacao não é Nulo (para gastos antigos)
+                    data_formatada = "Data não registrada"
+                    if gasto.data_criacao:
+                        data_formatada = gasto.data_criacao.strftime('%d/%m/%Y %H:%M')
+                    # --- FIM DA CORREÇÃO ---
+
                     resposta += f"<b>ID: {gasto.id}</b> | R$ {gasto.valor:.2f} | {gasto.categoria}\n"
                     if gasto.descricao:
                         resposta += f"   └ <i>{gasto.descricao}</i>\n"
-                    resposta += f"   <small>({data_formatada})</small>\n\n" # '<small>' é tag HTML
+                    resposta += f"   <small>({data_formatada})</small>\n\n"
 
-        # --- (NOVO) LÓGICA DO /DELETAR ---
+        # --- LÓGICA DO /DELETAR ---
         elif texto_lower.startswith("/deletar "):
             try:
-                # Tenta pegar o ID (ex: "/deletar 5" -> "5")
                 partes = texto.split()
                 id_para_deletar = int(partes[1])
-                
-                # Procura o gasto no banco
                 gasto = db.query(Gasto).filter(Gasto.id == id_para_deletar).first()
                 
                 if gasto:
-                    # Se achou, deleta
                     db.delete(gasto)
                     db.commit()
                     resposta = f"✅ Gasto com <b>ID {id_para_deletar}</b> (R$ {gasto.valor:.2f}) foi deletado."
                 else:
-                    # Se não achou
                     resposta = f"❌ Gasto com <b>ID {id_para_deletar}</b> não encontrado."
 
             except (IndexError, ValueError):
-                # Se o usuário digitou "/deletar" sem número, ou "/deletar abc"
                 resposta = "❌ Formato inválido. Use <code>/deletar [NÚMERO_ID]</code>\n"
                 resposta += "Use <code>/listar</code> para ver os IDs."
 
         # --- LÓGICA DE SALVAR GASTO (O "ELSE" FINAL) ---
         else:
             try:
-                # Se não for nenhum comando, tenta salvar como gasto
                 partes = texto.split()
                 valor_str = partes[0].replace(',', '.')
                 valor_float = float(valor_str)
@@ -182,13 +180,12 @@ async def webhook(update: Update):
                 resposta = f"✅ Gasto salvo!\n<b>ID: {novo_gasto.id}</b>\n<b>Valor:</b> R$ {valor_float:.2f}\n<b>Categoria:</b> {categoria.lower()}"
 
             except (ValueError, IndexError):
-                # Se falhar (ex: "olá"), avisa o usuário
                 resposta = "❌ Formato inválido. Tente:\n<code>VALOR CATEGORIA</code>\n"
                 resposta += "Ou envie <code>/start</code> para ver todos os comandos."
         
         # Envia a resposta final, seja ela qual for
         await send_message(chat_id, resposta)
     
-    db.close() # Fecha a sessão com o banco
+    db.close() 
     print("--------------------------------------------------")
     return {"status": "ok"}
