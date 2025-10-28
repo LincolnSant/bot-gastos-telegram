@@ -1,9 +1,10 @@
 import httpx
-from fastapi import FastAPI, Depends # <<< Dependências do FastAPI
+from fastapi import FastAPI, Depends # Adicionado Depends
 from pydantic import BaseModel, Field
 from typing import Optional, List
 import os 
-from sqlalchemy.orm import Session # <<< Dependências do SQLAlchemy/ORM
+from sqlalchemy.orm import Session # Adicionado Session
+import re # Adicionado REGEX para categorias com mais de uma palavra
 
 # --- Imports do Banco de Dados ---
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, desc 
@@ -22,14 +23,13 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- FUNÇÃO DE INJEÇÃO DE DEPENDÊNCIA (CORREÇÃO DE CONEXÃO) ---
-# Garante que a sessão do banco seja fechada corretamente.
+# --- FUNÇÃO DE INJEÇÃO DE DEPENDÊNCIA (NOVO PADRÃO) ---
 def get_db():
     db = SessionLocal()
     try:
-        yield db
+        yield db # Entrega a conexão
     finally:
-        db.close()
+        db.close() # Garante que a conexão será fechada
 # --------------------------------
 
 
@@ -83,7 +83,7 @@ async def send_message(chat_id: int, text: str):
         except Exception as e:
             print(f"Erro ao enviar mensagem: {e}")
 
-# --- NOSSO ENDPOINT DE WEBHOOK (CÓDIGO FINAL DE FUNCIONALIDADE) ---
+# --- NOSSO ENDPOINT DE WEBHOOK (FINAL E FUNCIONAL) ---
 @app.post("/webhook")
 async def webhook(update: Update, db: Session = Depends(get_db)): # << MUDANÇA ESSENCIAL
     chat_id = update.message.chat.id
@@ -95,7 +95,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)): # << MUDANÇA 
     
     resposta = "" 
 
-    # Bloco try/except principal para capturar qualquer erro fatal e enviar uma mensagem de fallback.
+    # Bloco try/except principal para capturar qualquer erro fatal no Render Free Tier.
     try:
         if texto:
             texto_lower = texto.lower()
@@ -104,8 +104,9 @@ async def webhook(update: Update, db: Session = Depends(get_db)): # << MUDANÇA 
             if texto_lower.strip() == "/start":
                 resposta = f"Olá, <b>{nome_usuario}</b>! 👋\n\n"
                 resposta += "Para anotar um gasto, envie:\n"
-                resposta += "<code>VALOR CATEGORIA (descrição)</code>\n"
-                resposta += "<b>Exemplo:</b> <code>15.50 padaria</code>\n\n"
+                resposta += "<code>VALOR \"CATEGORIA\" (descrição)</code>\n"
+                resposta += "<b>Exemplo:</b> <code>15.50 padaria</code> (Para 1 palavra)\n"
+                resposta += "<b>Exemplo:</b> <code>100 \"máquina de lavar louça\"</code> (Para mais de 1 palavra)\n\n"
                 resposta += "Para ver seu resumo, envie:\n"
                 resposta += "<code>/relatorio</code>\n\n"
                 resposta += "Para ver os últimos gastos, envie:\n"
@@ -131,7 +132,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)): # << MUDANÇA 
                     resposta += "\n----------------------\n"
                     resposta += f"<b>TOTAL GERAL: R$ {total_geral:.2f}</b>"
 
-            # --- (LÓGICA DO /LISTAR CORRIGIDA E ESTÁVEL) ---
+            # --- (LÓGICA DO /LISTAR FINAL E ESTÁVEL) ---
             elif texto_lower.strip() == "/listar":
                 consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(10).all()
                 
@@ -157,9 +158,9 @@ async def webhook(update: Update, db: Session = Depends(get_db)): # << MUDANÇA 
                             resposta += f"   <small>({data_formatada})</small>\n\n"
                         
                         except Exception as e:
-                            # Se algo der errado com a formatação (ex: data ou valor estranho)
-                            print(f"ERRO DE FORMATAÇÃO DO ITEM {gasto.id}: {e}")
-                            resposta += f"⚠️ Erro ao exibir Gasto ID {gasto.id} (R$ {gasto.valor:.2f})\n\n"
+                            # Se algo der errado com a formatação (erro no dado)
+                            print(f"ERRO DE FORMATAÇÃO NO ITEM {gasto.id}: {e}")
+                            resposta += f"⚠️ Erro ao exibir Gasto ID {gasto.id}. Tente deletá-lo.\n\n" # Mensagem de fallback
 
             # --- LÓGICA DO /DELETAR ---
             elif texto_lower.startswith("/deletar"):
@@ -195,16 +196,36 @@ async def webhook(update: Update, db: Session = Depends(get_db)): # << MUDANÇA 
             # --- LÓGICA DE SALVAR GASTO (O "ELSE" FINAL) ---
             else:
                 try:
-                    partes = texto.split()
-                    valor_str = partes[0].replace(',', '.')
-                    valor_float = float(valor_str)
-                    categoria = "geral" 
-                    descricao = None
+                    # Tenta encontrar a categoria entre aspas duplas (REGULAR EXPRESSION)
+                    match = re.match(r"([\d\.,]+)\s*\"([^\"]+)\"\s*(.*)", texto, re.IGNORECASE)
                     
-                    if len(partes) > 1:
-                        categoria = partes[1]
-                    if len(partes) > 2:
-                        descricao = " ".join(partes[2:])
+                    if match:
+                        # Se encontrou o padrão com aspas (100 "categoria" descrição)
+                        valor_str = match.group(1).replace(',', '.')
+                        valor_float = float(valor_str)
+                        categoria = match.group(2).strip()
+                        descricao = match.group(3).strip() or None
+                    else:
+                        # Se não encontrou aspas, usa a lógica antiga (valor e primeira palavra)
+                        partes = texto.split()
+                        valor_str = partes[0].replace(',', '.')
+                        valor_float = float(valor_str)
+                        
+                        # Categoria será só a primeira palavra, e a descrição é o resto
+                        categoria = partes[1] 
+                        if len(partes) > 2:
+                            descricao = " ".join(partes[2:])
+                        else:
+                            descricao = None
+
+                        # Avisa o usuário sobre aspas
+                        aviso = f"⚠️ Categoria '{categoria}' foi salva como UMA SÓ PALAVRA.\n"
+                        aviso += "Para categorias com mais de uma palavra, use aspas: <code>100 \"máquina de lavar louça\"</code>"
+                        await send_message(chat_id, aviso)
+                    
+                    # O restante do código de salvar
+                    if not categoria:
+                        raise ValueError("Categoria Vazia")
 
                     novo_gasto = Gasto(valor=valor_float, categoria=categoria.lower(), descricao=descricao)
                     db.add(novo_gasto)
@@ -219,7 +240,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)): # << MUDANÇA 
             await send_message(chat_id, resposta)
             
     except Exception as e:
-        # Se um erro fatal ocorrer quebrar o bloco principal (muito raro, mas possível no Render Free Tier)
+        # Se um erro fatal ocorrer (conexão ou crash)
         print(f"ERRO FATAL NA FUNÇÃO WEBHOOK: {e}")
         await send_message(chat_id, "❌ Desculpe, ocorreu um erro fatal no servidor. Por favor, tente novamente mais tarde.")
 
