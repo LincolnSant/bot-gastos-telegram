@@ -3,6 +3,8 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 from typing import Optional, List
 import os 
+from fastapi import Depends # <<< INCLUÍ ESTE IMPORT AGORA
+from sqlalchemy.orm import Session # <<< INCLUÍ ESTE IMPORT AGORA
 
 # --- Imports do Banco de Dados ---
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, desc 
@@ -20,6 +22,14 @@ TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 engine = create_engine(DATABASE_URL) 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+# --- FUNÇÃO DE INJEÇÃO DE DEPENDÊNCIA ---
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 # --------------------------------
 
 
@@ -73,9 +83,9 @@ async def send_message(chat_id: int, text: str):
         except Exception as e:
             print(f"Erro ao enviar mensagem: {e}")
 
-# --- NOSSO ENDPOINT DE WEBHOOK (CÓDIGO FINAL DE FUNCIONALIDADE) ---
+# --- NOSSO ENDPOINT DE WEBHOOK (FINAL E FUNCIONAL) ---
 @app.post("/webhook")
-async def webhook(update: Update):
+async def webhook(update: Update, db: Session = Depends(get_db)): # << MUDANÇA ESSENCIAL
     chat_id = update.message.chat.id
     texto = update.message.text
     nome_usuario = update.message.from_user.first_name
@@ -84,7 +94,6 @@ async def webhook(update: Update):
     print(f"De: {nome_usuario} | Texto: {texto}")
     
     resposta = "" 
-    db = SessionLocal() 
 
     if texto:
         texto_lower = texto.lower()
@@ -101,7 +110,7 @@ async def webhook(update: Update):
             resposta += "<code>/listar</code>\n\n"
             resposta += "Para apagar um gasto, envie:\n"
             resposta += "<code>/deletar [ID_DO_GASTO]</code>\n"
-            resposta += "Para APAGAR TUDO, envie: <code>/zerartudo</code>"
+            resposta += "Para APAGAR TUDO, envie: <code>/zerartudo confirmar</code>"
 
         # --- LÓGICA DO /RELATORIO ---
         elif texto_lower.strip() == "/relatorio":
@@ -140,7 +149,6 @@ async def webhook(update: Update):
                         
                         # 3. Adicionando descrição (se existir)
                         if gasto.descricao:
-                            # Use um espaço normal (não o invisível)
                             resposta += f"   └ <i>{gasto.descricao}</i>\n"
                         
                         # 4. Adicionando a data
@@ -149,7 +157,7 @@ async def webhook(update: Update):
                     except Exception:
                         # Se algo der errado com a formatação (ex: data ou valor estranho)
                         resposta += f"⚠️ Erro ao exibir Gasto ID {gasto.id} (R$ {gasto.valor:.2f})\n\n"
-        
+
         # --- LÓGICA DO /DELETAR ---
         elif texto_lower.startswith("/deletar"):
             try:
@@ -207,6 +215,6 @@ async def webhook(update: Update):
         
         await send_message(chat_id, resposta)
     
-    db.close() 
+    # db.close() # Fechamento agora é feito pela função get_db
     print("--------------------------------------------------")
     return {"status": "ok"}
