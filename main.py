@@ -73,7 +73,7 @@ async def send_message(chat_id: int, text: str):
         except Exception as e:
             print(f"Erro ao enviar mensagem: {e}")
 
-# --- NOSSO ENDPOINT DE WEBHOOK (INDENTAÇÃO CORRIGIDA) ---
+# --- NOSSO ENDPOINT DE WEBHOOK (CÓDIGO FINAL) ---
 @app.post("/webhook")
 async def webhook(update: Update):
     chat_id = update.message.chat.id
@@ -90,7 +90,7 @@ async def webhook(update: Update):
         texto_lower = texto.lower()
 
         # --- LÓGICA DO /START ---
-        if texto_lower == "/start":
+        if texto_lower.strip() == "/start":
             resposta = f"Olá, <b>{nome_usuario}</b>! 👋\n\n"
             resposta += "Para anotar um gasto, envie:\n"
             resposta += "<code>VALOR CATEGORIA (descrição)</code>\n"
@@ -100,11 +100,11 @@ async def webhook(update: Update):
             resposta += "Para ver os últimos gastos, envie:\n"
             resposta += "<code>/listar</code>\n\n"
             resposta += "Para apagar um gasto, envie:\n"
-            resposta += "<code>/deletar [ID_DO_GASTO]</code>"
-            resposta += "<code>/zerartudo</code>" # Adicionando o /zerartudo que eu esqueci
+            resposta += "<code>/deletar [ID_DO_GASTO]</code>\n"
+            resposta += "Para APAGAR TUDO, envie: <code>/zerartudo</code>"
 
         # --- LÓGICA DO /RELATORIO ---
-        elif texto_lower == "/relatorio":
+        elif texto_lower.strip() == "/relatorio":
             consulta = db.query(
                 Gasto.categoria, func.sum(Gasto.valor)
             ).group_by(Gasto.categoria).all()
@@ -121,7 +121,7 @@ async def webhook(update: Update):
                 resposta += f"<b>TOTAL GERAL: R$ {total_geral:.2f}</b>"
 
         # --- (LÓGICA DO /LISTAR CORRIGIDA) ---
-        elif texto_lower == "/listar":
+        elif texto_lower.strip() == "/listar":
             consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(10).all()
             
             resposta = "📋 <b>Últimos 10 Gastos Registrados</b> 📋\n\n"
@@ -134,12 +134,16 @@ async def webhook(update: Update):
                         data_formatada = gasto.data_criacao.strftime('%d/%m/%Y %H:%M')
                     
                     resposta += f"<b>ID: {gasto.id}</b> | R$ {gasto.valor:.2f} | {gasto.categoria}\n"
+                    
+                    # (BUG FIX: Removido o espaço invisível)
                     if gasto.descricao:
                         resposta += f"   └ <i>{gasto.descricao}</i>\n"
+                    
+                    # (BUG FIX: Removido o espaço invisível)
                     resposta += f"   <small>({data_formatada})</small>\n\n"
 
         # --- LÓGICA DO /DELETAR ---
-        elif texto_lower.startswith("/deletar "):
+        elif texto_lower.startswith("/deletar"):
             try:
                 partes = texto.split()
                 id_para_deletar = int(partes[1])
@@ -156,17 +160,14 @@ async def webhook(update: Update):
                 resposta = "❌ Formato inválido. Use <code>/deletar [NÚMERO_ID]</code>\n"
                 resposta += "Use <code>/listar</code> para ver os IDs."
         
-        # --- (NOVO) LÓGICA DO /ZERARTUDO ---
+        # --- LÓGICA DO /ZERARTUDO ---
         elif texto_lower.startswith("/zerartudo"):
             partes = texto.split()
-            # Verifica se o usuário enviou "/zerartudo confirmar"
             if len(partes) == 2 and partes[1] == "confirmar":
-                # Deleta todos os registros da tabela Gasto
                 num_deletados = db.query(Gasto).delete()
                 db.commit()
                 resposta = f"✅🔥 Todos os <b>{num_deletados}</b> gastos foram permanentemente apagados."
             else:
-                # Se ele só enviou "/zerartudo", envia o aviso
                 resposta = "⚠️ <b>AÇÃO PERIGOSA!</b> ⚠️\n\n"
                 resposta += "Você está prestes a apagar TODOS os seus gastos.\n"
                 resposta += "Se você tem certeza, envie o comando:\n"
@@ -196,9 +197,7 @@ async def webhook(update: Update):
                 resposta = "❌ Formato inválido. Tente:\n<code>VALOR CATEGORIA</code>\n"
                 resposta += "Ou envie <code>/start</code> para ver todos os comandos."
         
-        # --- (CORREÇÃO DE INDENTAÇÃO) ---
-        # Esta linha agora está FORA do 'else' e será 
-        # executada para TODOS os comandos.
+        # --- (CORREÇÃO DE INDENTAÇÃO FINAL - FORA DO ELSE) ---
         await send_message(chat_id, resposta)
     
     db.close() 
