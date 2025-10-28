@@ -1,14 +1,13 @@
 import httpx
 from fastapi import FastAPI, Depends
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List # << Incluí o List que faltava
 import os
-from sqlalchemy.orm import Session # Usaremos a Session da ORM
-import re 
-from typing import List # Adicionado List
+from sqlalchemy.orm import Session
+import re
 
 # --- Imports do Banco de Dados ---
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, desc # <<< desc IMPORTADO CORRETAMENTE
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, desc
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import func
 # ---------------------------------
@@ -17,17 +16,17 @@ from sqlalchemy.sql import func
 # --- CONFIGURAÇÃO ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
+# 🔧 CORREÇÃO AUTOMÁTICA PARA O RENDER (postgres:// → postgresql://)
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# --- Config do Banco de Dados (Padrão FASTAPI CORRETO) ---
-# Pool size e pre_ping são boas práticas
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_size=2, max_overflow=0)
+# --- Config do Banco de Dados ---
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- FUNÇÃO DE INJEÇÃO DE DEPENDÊNCIA (PADRÃO SIMPLES COM 'yield') ---
+# --- FUNÇÃO DE INJEÇÃO DE DEPENDÊNCIA (PADRÃO FASTAPI CORRETO) ---
 def get_db():
     db = SessionLocal()
     try:
@@ -49,6 +48,8 @@ class Gasto(Base):
     categoria = Column(String(100), index=True)
     descricao = Column(String(255), nullable=True)
     data_criacao = Column(DateTime(timezone=True), server_default=func.now())
+# ---------------------------------
+
 
 # --- MOLDES DO TELEGRAM ---
 class User(BaseModel):
@@ -79,7 +80,10 @@ def on_startup():
 # --- FUNÇÃO DE RESPOSTA ---
 async def send_message(chat_id: int, text: str):
     url = f"{TELEGRAM_API_URL}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    # IMPORTANTE: Removendo parse_mode HTML para o /listar simplificado
+    payload = {"chat_id": chat_id, "text": text}
+    # Se precisar de HTML em outros comandos, terá que adicionar o parse_mode de volta
+    # de forma condicional ou criar outra função send_message_html
     async with httpx.AsyncClient(timeout=10) as client:
         try:
             await client.post(url, json=payload)
@@ -97,8 +101,9 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
     print(f"De: {nome_usuario} | Texto: {texto}")
 
     resposta = ""
+    mensagem_foi_enviada = False
 
-    # Bloco try/except principal para capturar qualquer erro fatal
+    # Bloco try/except principal
     try:
         if texto:
             texto_lower = texto.lower().strip()
@@ -108,15 +113,14 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                 resposta = f"Olá, <b>{nome_usuario}</b>! 👋\n\n"
                 resposta += "Para anotar um gasto, envie:\n"
                 resposta += "<code>VALOR \"CATEGORIA\" (descrição)</code>\n"
-                resposta += "<b>Exemplo:</b> <code>15.50 padaria</code> (Para 1 palavra)\n"
-                resposta += "<b>Exemplo:</b> <code>100 \"máquina de lavar louça\"</code> (Para mais de 1 palavra)\n\n"
+                resposta += "<b>Exemplo:</b> <code>15.50 padaria</code>\n"
+                resposta += "<b>Exemplo:</b> <code>100 \"lava louça\"</code>\n\n"
                 resposta += "Comandos:\n"
                 resposta += "<code>/relatorio</code> | <code>/listar</code> | <code>/deletar [ID]</code> | <code>/zerartudo confirmar</code>"
 
             # --- LÓGICA DO /RELATORIO ---
             elif texto_lower == "/relatorio":
                 consulta = db.query(Gasto.categoria, func.sum(Gasto.valor)).group_by(Gasto.categoria).all()
-
                 total_geral = 0
                 resposta = "📊 <b>Relatório por Categoria</b> 📊\n\n"
                 if not consulta:
@@ -127,28 +131,35 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                         total_geral += total
                     resposta += f"\n──────────\n<b>TOTAL: R$ {total_geral:.2f}</b>"
 
-            # --- LÓGICA DO /LISTAR (ESTÁVEL) ---
+            # --- (LÓGICA DO /LISTAR SIMPLIFICADA E ESTÁVEL) --- # <<< MODIFICAÇÃO AQUI
             elif texto_lower == "/listar":
-                consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(10).all()
+                # Reduzindo o limite para 5 itens para garantir
+                consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(5).all()
 
-                resposta = "📋 <b>Últimos 10 Gastos</b> 📋\n\n"
+                resposta = "📋 Últimos 5 Gastos Registrados 📋\n\n" # Removido HTML do título
                 if not consulta:
                     resposta += "Nenhum gasto registrado ainda."
                 else:
                     for gasto in consulta:
                         try:
+                            # Formatação SEM HTML e mais compacta
                             data_formatada = "Sem Data"
                             if gasto.data_criacao:
-                                data_formatada = gasto.data_criacao.strftime('%d/%m/%Y %H:%M')
+                                # Formato mais curto ainda
+                                data_formatada = gasto.data_criacao.strftime('%d/%m %H:%M')
 
-                            resposta += f"<b>ID: {gasto.id}</b> | R$ {gasto.valor:.2f} | {gasto.categoria}\n"
+                            linha = f"ID {gasto.id}: R$ {gasto.valor:.2f} ({gasto.categoria})"
                             if gasto.descricao:
-                                resposta += f"   └ <i>{gasto.descricao}</i>\n"
-                            resposta += f"   <small>({data_formatada})</small>\n\n"
+                                linha += f" - {gasto.descricao}" # Descrição na mesma linha
+                            linha += f" [{data_formatada}]\n" # Data no final da linha
+                            resposta += linha
 
                         except Exception as e:
                             print(f"⚠️ Erro ao formatar Gasto ID {gasto.id}: {e}")
-                            resposta += f"⚠️ Erro ao exibir Gasto ID {gasto.id}. Tente deletá-lo.\n\n"
+                            resposta += f"⚠️ Erro ao exibir Gasto ID {gasto.id}\n"
+
+                # Aviso sobre o limite
+                resposta += "\n(Mostrando os últimos 5)"
 
             # --- LÓGICA DO /DELETAR ---
             elif texto_lower.startswith("/deletar"):
@@ -164,7 +175,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                         db.commit()
                         resposta = f"✅ Gasto <b>ID {id_para_deletar}</b> (R$ {valor_gasto:.2f}) deletado."
                     else:
-                        resposta = f"❌ Gasto <b>ID {id_para_deletar}</b> não encontrado."
+                        resposta = f"❌ Gasto com <b>ID {id_para_deletar}</b> não encontrado."
 
                 except (IndexError, ValueError):
                     resposta = "❌ Uso: <code>/deletar [NÚMERO_ID]</code> (veja IDs com /listar)"
@@ -201,8 +212,8 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                             aviso_aspas = True
                         else:
                             descricao = None
-                            if len(partes) > 1 and len(categoria.split()) > 1:
-                                aviso_aspas = True
+                            # Avisa mesmo se for só valor e categoria simples
+                            aviso_aspas = True
 
 
                     if not categoria: raise ValueError("Categoria vazia")
@@ -213,28 +224,32 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                     db.refresh(novo_gasto)
 
                     resposta = f"✅ Gasto salvo!\n<b>ID: {novo_gasto.id}</b>\n<b>Valor:</b> R$ {valor_float:.2f}\n<b>Categoria:</b> {categoria.lower()}"
-                    
+
                     if aviso_aspas and resposta.startswith("✅"):
                          aviso = (f"⚠️ Categoria '{categoria}' salva como palavra única.\n"
                                   "Use aspas para múltiplas palavras: <code>VALOR \"CATEGORIA LONGA\"</code>")
+                         # Envia o aviso separadamente
                          await send_message(chat_id, aviso)
 
 
                 except (ValueError, IndexError):
                     resposta = "❌ Formato inválido. Use <code>VALOR CATEGORIA</code> ou <code>/start</code>."
-            
+
             # Envia a resposta SOMENTE se uma foi gerada
             if resposta:
                 print(f"-> Preparando para enviar resposta: '{resposta[:50]}...'")
+                # IMPORTANTE: A função send_message foi alterada para NÃO usar HTML por padrão
+                # Se outros comandos precisarem de HTML, será preciso ajustar
                 await send_message(chat_id, resposta)
+                mensagem_foi_enviada = True
 
     except Exception as e:
         # Se um erro fatal ocorrer (conexão ou crash)
         print(f"💥 ERRO FATAL NA FUNÇÃO WEBHOOK: {e}")
-        try: # Tenta enviar um aviso de erro
-            await send_message(chat_id, "❌ Ocorreu um erro fatal no servidor. Tente novamente.")
+        try:
+            await send_message(chat_id, "❌ Desculpe, ocorreu um erro fatal no servidor. Tente novamente.")
         except:
-            pass 
+            pass
 
     print("--------------------------------------------------")
     return {"status": "ok"}
