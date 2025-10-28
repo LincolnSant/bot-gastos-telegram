@@ -1,7 +1,7 @@
 import httpx
 from fastapi import FastAPI, Depends
 from pydantic import BaseModel, Field
-from typing import Optional, List # << Incluí o List que faltava
+from typing import Optional, List
 import os
 from sqlalchemy.orm import Session
 import re
@@ -26,7 +26,7 @@ engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- FUNÇÃO DE INJEÇÃO DE DEPENDÊNCIA (PADRÃO FASTAPI CORRETO) ---
+# --- FUNÇÃO DE INJEÇÃO DE DEPENDÊNCIA ---
 def get_db():
     db = SessionLocal()
     try:
@@ -48,8 +48,6 @@ class Gasto(Base):
     categoria = Column(String(100), index=True)
     descricao = Column(String(255), nullable=True)
     data_criacao = Column(DateTime(timezone=True), server_default=func.now())
-# ---------------------------------
-
 
 # --- MOLDES DO TELEGRAM ---
 class User(BaseModel):
@@ -67,7 +65,7 @@ class Update(BaseModel):
     update_id: int
     message: Message
 
-# --- FUNÇÃO DE INICIALIZAÇÃO (LIMPA) ---
+# --- FUNÇÃO DE INICIALIZAÇÃO ---
 @app.on_event("startup")
 def on_startup():
     print("Iniciando: Verificando/Criando tabelas do banco de dados...")
@@ -77,18 +75,25 @@ def on_startup():
     except Exception as e:
         print(f"ERRO CRÍTICO DURANTE CRIAÇÃO DAS TABELAS: {e}")
 
-# --- FUNÇÃO DE RESPOSTA ---
-async def send_message(chat_id: int, text: str):
+# --- FUNÇÃO DE RESPOSTA (COM PARSE_MODE OPCIONAL) ---
+async def send_message(chat_id: int, text: str, parse_mode: Optional[str] = "HTML"): # << MUDANÇA AQUI
     url = f"{TELEGRAM_API_URL}/sendMessage"
-    # IMPORTANTE: Removendo parse_mode HTML para o /listar simplificado
     payload = {"chat_id": chat_id, "text": text}
-    # Se precisar de HTML em outros comandos, terá que adicionar o parse_mode de volta
-    # de forma condicional ou criar outra função send_message_html
+    if parse_mode: # Adiciona parse_mode apenas se não for None
+        payload["parse_mode"] = parse_mode
+
     async with httpx.AsyncClient(timeout=10) as client:
         try:
-            await client.post(url, json=payload)
+            response = await client.post(url, json=payload)
+            if response.status_code != 200:
+                 print(f"⚠️ Telegram API Error {response.status_code}: {response.text}")
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            print(f"⚠️ Erro HTTP ao enviar mensagem: Status {e.response.status_code}")
+            if e.response.status_code == 400 and "message is too long" in e.response.text.lower():
+                print(">>> ERRO DETECTADO: Mensagem excedeu o limite de 4096 caracteres do Telegram.")
         except Exception as e:
-            print(f"⚠️ Erro ao enviar mensagem: {e}")
+            print(f"⚠️ Erro inesperado ao enviar mensagem: {e}")
 
 # --- WEBHOOK PRINCIPAL ---
 @app.post("/webhook")
@@ -101,9 +106,9 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
     print(f"De: {nome_usuario} | Texto: {texto}")
 
     resposta = ""
+    parse_mode_resposta = "HTML" # Padrão HTML para a maioria das respostas
     mensagem_foi_enviada = False
 
-    # Bloco try/except principal
     try:
         if texto:
             texto_lower = texto.lower().strip()
@@ -131,34 +136,28 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                         total_geral += total
                     resposta += f"\n──────────\n<b>TOTAL: R$ {total_geral:.2f}</b>"
 
-            # --- (LÓGICA DO /LISTAR SIMPLIFICADA E ESTÁVEL) --- # <<< MODIFICAÇÃO AQUI
+            # --- LÓGICA DO /LISTAR (SEM HTML) ---
             elif texto_lower == "/listar":
-                # Reduzindo o limite para 5 itens para garantir
+                parse_mode_resposta = None # << DESLIGA HTML PARA ESTA RESPOSTA
                 consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(5).all()
-
-                resposta = "📋 Últimos 5 Gastos Registrados 📋\n\n" # Removido HTML do título
+                resposta = "📋 Últimos 5 Gastos Registrados 📋\n\n"
                 if not consulta:
                     resposta += "Nenhum gasto registrado ainda."
                 else:
                     for gasto in consulta:
                         try:
-                            # Formatação SEM HTML e mais compacta
                             data_formatada = "Sem Data"
                             if gasto.data_criacao:
-                                # Formato mais curto ainda
                                 data_formatada = gasto.data_criacao.strftime('%d/%m %H:%M')
 
                             linha = f"ID {gasto.id}: R$ {gasto.valor:.2f} ({gasto.categoria})"
                             if gasto.descricao:
-                                linha += f" - {gasto.descricao}" # Descrição na mesma linha
-                            linha += f" [{data_formatada}]\n" # Data no final da linha
+                                linha += f" - {gasto.descricao}"
+                            linha += f" [{data_formatada}]\n"
                             resposta += linha
-
                         except Exception as e:
                             print(f"⚠️ Erro ao formatar Gasto ID {gasto.id}: {e}")
                             resposta += f"⚠️ Erro ao exibir Gasto ID {gasto.id}\n"
-
-                # Aviso sobre o limite
                 resposta += "\n(Mostrando os últimos 5)"
 
             # --- LÓGICA DO /DELETAR ---
@@ -212,8 +211,8 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                             aviso_aspas = True
                         else:
                             descricao = None
-                            # Avisa mesmo se for só valor e categoria simples
-                            aviso_aspas = True
+                            if len(partes) > 1 : # Avisa se tiver só valor e categoria
+                                aviso_aspas = True
 
 
                     if not categoria: raise ValueError("Categoria vazia")
@@ -228,7 +227,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                     if aviso_aspas and resposta.startswith("✅"):
                          aviso = (f"⚠️ Categoria '{categoria}' salva como palavra única.\n"
                                   "Use aspas para múltiplas palavras: <code>VALOR \"CATEGORIA LONGA\"</code>")
-                         # Envia o aviso separadamente
+                         # Envia o aviso separadamente (mantendo HTML padrão)
                          await send_message(chat_id, aviso)
 
 
@@ -237,16 +236,14 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
 
             # Envia a resposta SOMENTE se uma foi gerada
             if resposta:
-                print(f"-> Preparando para enviar resposta: '{resposta[:50]}...'")
-                # IMPORTANTE: A função send_message foi alterada para NÃO usar HTML por padrão
-                # Se outros comandos precisarem de HTML, será preciso ajustar
-                await send_message(chat_id, resposta)
+                print(f"-> Preparando para enviar resposta (ParseMode={parse_mode_resposta}): '{resposta[:50]}...'")
+                await send_message(chat_id, resposta, parse_mode=parse_mode_resposta) # << Passa o parse_mode
                 mensagem_foi_enviada = True
 
     except Exception as e:
-        # Se um erro fatal ocorrer (conexão ou crash)
         print(f"💥 ERRO FATAL NA FUNÇÃO WEBHOOK: {e}")
         try:
+            # Tenta enviar erro com HTML padrão
             await send_message(chat_id, "❌ Desculpe, ocorreu um erro fatal no servidor. Tente novamente.")
         except:
             pass
