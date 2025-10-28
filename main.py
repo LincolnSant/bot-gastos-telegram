@@ -135,32 +135,40 @@ async def webhook(update: Update):
                         if gasto.data_criacao:
                             data_formatada = gasto.data_criacao.strftime('%d/%m/%Y %H:%M')
                         
+                    # --- (LÓGICA DO /LISTAR SUPER ESTÁVEL) ---
+        elif texto_lower.strip() == "/listar":
+            consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(10).all()
+            
+            resposta = "📋 <b>Últimos 10 Gastos Registrados</b> 📋\n\n"
+            if not consulta:
+                resposta += "Nenhum gasto registrado ainda."
+            else:
+                for gasto in consulta:
+                    try:
+                        # 1. Formatando a Data (Com tratamento de erro)
+                        data_formatada = "Sem Data"
+                        if gasto.data_criacao:
+                            data_formatada = gasto.data_criacao.strftime('%d/%m/%Y %H:%M')
+                        
+                        # 2. Montando a linha principal
                         resposta += f"<b>ID: {gasto.id}</b> | R$ {gasto.valor:.2f} | {gasto.categoria}\n"
                         
+                        # 3. Adicionando descrição (se existir)
                         if gasto.descricao:
-                            resposta += f"   └ <i>{gasto.descricao}</i>\n"
+                            # Use um espaço normal (não o invisível)
+                            resposta += f"  └ <i>{gasto.descricao}</i>\n"
                         
-                        resposta += f"   <small>({data_formatada})</small>\n\n"
+                        # 4. Adicionando a data
+                        resposta += f"  <small>({data_formatada})</small>\n\n"
                     
-                    except Exception:
-                        # Se falhar, pelo menos mostra o ID e Valor (as coisas que não quebram)
+                    except Exception as e:
+                        # Se algo der errado com a formatação (ex: data ou valor estranho)
+                        print(f"ERRO DE FORMATAÇÃO NO LISTAR: {e}")
                         resposta += f"⚠️ Erro ao exibir Gasto ID {gasto.id} (R$ {gasto.valor:.2f})\n\n"
 
         # --- LÓGICA DO /DELETAR ---
         elif texto_lower.startswith("/deletar"):
             # ... resto do código do /deletar
-
-        # --- LÓGICA DO /DELETAR ---
-        elif texto_lower.startswith("/deletar"):
-            try:
-                partes = texto.split()
-                id_para_deletar = int(partes[1])
-                gasto = db.query(Gasto).filter(Gasto.id == id_para_deletar).first()
-                
-                if gasto:
-                    db.delete(gasto)
-                    db.commit()
-                    resposta = f"✅ Gasto com <b>ID {id_para_deletar}</b> (R$ {gasto.valor:.2f}) foi deletado."
                 else:
                     resposta = f"❌ Gasto com <b>ID {id_para_deletar}</b> não encontrado."
 
@@ -211,4 +219,5 @@ async def webhook(update: Update):
     db.close() 
     print("--------------------------------------------------")
     return {"status": "ok"}
+
 
