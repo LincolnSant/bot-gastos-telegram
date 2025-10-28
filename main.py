@@ -73,7 +73,7 @@ async def send_message(chat_id: int, text: str):
         except Exception as e:
             print(f"Erro ao enviar mensagem: {e}")
 
-# --- NOSSO ENDPOINT DE WEBHOOK (COM CORREÇÃO DE BUG) ---
+# --- NOSSO ENDPOINT DE WEBHOOK (COM CORREÇÃO DE BUG V3) ---
 @app.post("/webhook")
 async def webhook(update: Update):
     chat_id = update.message.chat.id
@@ -119,7 +119,7 @@ async def webhook(update: Update):
                 resposta += "\n----------------------\n"
                 resposta += f"<b>TOTAL GERAL: R$ {total_geral:.2f}</b>"
 
-        # --- (LÓGICA DO /LISTAR CORRIGIDA) ---
+        # --- (LÓGICA DO /LISTAR SUPER DEFENSIVA) ---
         elif texto_lower == "/listar":
             consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(10).all()
             
@@ -128,18 +128,37 @@ async def webhook(update: Update):
                 resposta += "Nenhum gasto registrado ainda."
             else:
                 for gasto in consulta:
-                    
-                    # --- (CORREÇÃO DO BUG) ---
-                    # Verifica se data_criacao não é Nulo (para gastos antigos)
-                    data_formatada = "Data não registrada"
-                    if gasto.data_criacao:
-                        data_formatada = gasto.data_criacao.strftime('%d/%m/%Y %H:%M')
-                    # --- FIM DA CORREÇÃO ---
+                    try:
+                        # --- (CORREÇÃO SUPER DEFENSIVA) ---
+                        data_formatada = "Data não registrada"
+                        if gasto.data_criacao is not None:
+                            try:
+                                data_formatada = gasto.data_criacao.strftime('%d/%m/%Y %H:%M')
+                            except Exception:
+                                data_formatada = "Erro de data" # Se strftime falhar
+                        
+                        gasto_id = str(gasto.id)
+                        
+                        gasto_valor = "???"
+                        if gasto.valor is not None:
+                            gasto_valor = f"{gasto.valor:.2f}"
+                        
+                        gasto_categoria = "N/A"
+                        if gasto.categoria is not None:
+                            gasto_categoria = str(gasto.categoria)
 
-                    resposta += f"<b>ID: {gasto.id}</b> | R$ {gasto.valor:.2f} | {gasto.categoria}\n"
-                    if gasto.descricao:
-                        resposta += f"   └ <i>{gasto.descricao}</i>\n"
-                    resposta += f"   <small>({data_formatada})</small>\n\n"
+                        resposta += f"<b>ID: {gasto_id}</b> | R$ {gasto_valor} | {gasto_categoria}\n"
+                        
+                        if gasto.descricao is not None:
+                            resposta += f"   └ <i>{str(gasto.descricao)}</i>\n"
+                        
+                        resposta += f"   <small>({data_formatada})</small>\n\n"
+                        # --- (FIM DA CORREÇÃO SUPER DEFENSIVA) ---
+                    
+                    except Exception as e:
+                        # Se algo INESPERADO acontecer, loga e avisa o usuário
+                        print(f"ERRO CRÍTICO NO /LISTAR AO PROCESSAR GASTO ID {gasto.id}: {e}")
+                        resposta += f"⚠️ Erro ao processar o Gasto ID {gasto.id}\n\n"
 
         # --- LÓGICA DO /DELETAR ---
         elif texto_lower.startswith("/deletar "):
