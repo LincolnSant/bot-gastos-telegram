@@ -1,10 +1,11 @@
 import httpx
 from fastapi import FastAPI, Depends
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List # << Incluí o List que faltava
 import os
 from sqlalchemy.orm import Session
 import re
+from datetime import datetime, timedelta # <<< ADICIONADO PARA A LIMPEZA
 
 # --- Imports do Banco de Dados ---
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, desc
@@ -76,10 +77,10 @@ def on_startup():
         print(f"ERRO CRÍTICO DURANTE CRIAÇÃO DAS TABELAS: {e}")
 
 # --- FUNÇÃO DE RESPOSTA (COM PARSE_MODE OPCIONAL) ---
-async def send_message(chat_id: int, text: str, parse_mode: Optional[str] = "HTML"): # << MUDANÇA AQUI
+async def send_message(chat_id: int, text: str, parse_mode: Optional[str] = "HTML"):
     url = f"{TELEGRAM_API_URL}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
-    if parse_mode: # Adiciona parse_mode apenas se não for None
+    if parse_mode:
         payload["parse_mode"] = parse_mode
 
     async with httpx.AsyncClient(timeout=10) as client:
@@ -94,6 +95,25 @@ async def send_message(chat_id: int, text: str, parse_mode: Optional[str] = "HTM
                 print(">>> ERRO DETECTADO: Mensagem excedeu o limite de 4096 caracteres do Telegram.")
         except Exception as e:
             print(f"⚠️ Erro inesperado ao enviar mensagem: {e}")
+
+
+# --- (NOVO) FUNÇÃO DE LIMPEZA DE DADOS ---
+def limpar_gastos_antigos(db: Session):
+    # Define o período de 6 meses (aprox. 180 dias)
+    dias_para_manter = 180 # Mantém por 180 dias
+    data_limite = datetime.now() - timedelta(days=dias_para_manter)
+
+    # Executa o DELETE no banco de dados
+    num_deletados = db.query(Gasto).filter(
+        Gasto.data_criacao < data_limite
+    ).delete(synchronize_session=False)
+
+    db.commit()
+
+    print(f"🗑️ Limpeza executada. {num_deletados} gastos anteriores a {data_limite.strftime('%Y-%m-%d')} foram apagados.")
+    return num_deletados
+# ------------------------------------------
+
 
 # --- WEBHOOK PRINCIPAL ---
 @app.post("/webhook")
@@ -121,7 +141,8 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                 resposta += "<b>Exemplo:</b> <code>15.50 padaria</code>\n"
                 resposta += "<b>Exemplo:</b> <code>100 \"lava louça\"</code>\n\n"
                 resposta += "Comandos:\n"
-                resposta += "<code>/relatorio</code> | <code>/listar</code> | <code>/deletar [ID]</code> | <code>/zerartudo confirmar</code>"
+                resposta += "<code>/relatorio</code> | <code>/listar</code> | <code>/deletar [ID]</code> | <code>/zerartudo confirmar</code>\n\n" # << Quebra de linha adicionada
+                resposta += "<small>ℹ️ <i>Gastos com mais de 6 meses são removidos automaticamente.</i></small>" # << AVISO ADICIONADO
 
             # --- LÓGICA DO /RELATORIO ---
             elif texto_lower == "/relatorio":
@@ -138,7 +159,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
 
             # --- LÓGICA DO /LISTAR (SEM HTML) ---
             elif texto_lower == "/listar":
-                parse_mode_resposta = None # << DESLIGA HTML PARA ESTA RESPOSTA
+                parse_mode_resposta = None # Desliga HTML para esta resposta
                 consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(5).all()
                 resposta = "📋 Últimos 5 Gastos Registrados 📋\n\n"
                 if not consulta:
@@ -211,7 +232,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                             aviso_aspas = True
                         else:
                             descricao = None
-                            if len(partes) > 1 : # Avisa se tiver só valor e categoria
+                            if len(partes) > 1 : # Avisa mesmo se for só valor e categoria
                                 aviso_aspas = True
 
 
@@ -237,13 +258,12 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
             # Envia a resposta SOMENTE se uma foi gerada
             if resposta:
                 print(f"-> Preparando para enviar resposta (ParseMode={parse_mode_resposta}): '{resposta[:50]}...'")
-                await send_message(chat_id, resposta, parse_mode=parse_mode_resposta) # << Passa o parse_mode
+                await send_message(chat_id, resposta, parse_mode=parse_mode_resposta)
                 mensagem_foi_enviada = True
 
     except Exception as e:
         print(f"💥 ERRO FATAL NA FUNÇÃO WEBHOOK: {e}")
         try:
-            # Tenta enviar erro com HTML padrão
             await send_message(chat_id, "❌ Desculpe, ocorreu um erro fatal no servidor. Tente novamente.")
         except:
             pass
