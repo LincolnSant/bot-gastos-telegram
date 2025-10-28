@@ -109,8 +109,6 @@ async def webhook(update: Update, db: Session = Depends(get_db)): # << MUDANÇA 
                 resposta += "<b>Exemplo:</b> <code>100 \"máquina de lavar louça\"</code> (Para mais de 1 palavra)\n\n"
                 resposta += "Para ver seu resumo, envie:\n"
                 resposta += "<code>/relatorio</code>\n\n"
-                resposta += "Para ver os últimos gastos, envie:\n"
-                resposta += "<code>/listar</code>\n\n"
                 resposta += "Para apagar um gasto, envie:\n"
                 resposta += "<code>/deletar [ID_DO_GASTO]</code>\n"
                 resposta += "Para APAGAR TUDO, envie: <code>/zerartudo confirmar</code>"
@@ -132,36 +130,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)): # << MUDANÇA 
                     resposta += "\n----------------------\n"
                     resposta += f"<b>TOTAL GERAL: R$ {total_geral:.2f}</b>"
 
-            # --- (LÓGICA DO /LISTAR FINAL E ESTÁVEL) ---
-            elif texto_lower.strip() == "/listar":
-                consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(10).all()
-                
-                resposta = "📋 <b>Últimos 10 Gastos Registrados</b> 📋\n\n"
-                if not consulta:
-                    resposta += "Nenhum gasto registrado ainda."
-                else:
-                    for gasto in consulta:
-                        try:
-                            # 1. Formatando a Data (Com tratamento de erro)
-                            data_formatada = "Sem Data"
-                            if gasto.data_criacao:
-                                data_formatada = gasto.data_criacao.strftime('%d/%m/%Y %H:%M')
-                            
-                            # 2. Montando a linha principal
-                            resposta += f"<b>ID: {gasto.id}</b> | R$ {gasto.valor:.2f} | {gasto.categoria}\n"
-                            
-                            # 3. Adicionando descrição (se existir)
-                            if gasto.descricao:
-                                resposta += f"   └ <i>{gasto.descricao}</i>\n"
-                            
-                            # 4. Adicionando a data
-                            resposta += f"   <small>({data_formatada})</small>\n\n"
-                        
-                        except Exception as e:
-                            # Se algo der errado com a formatação (erro no dado)
-                            print(f"ERRO DE FORMATAÇÃO NO ITEM {gasto.id}: {e}")
-                            resposta += f"⚠️ Erro ao exibir Gasto ID {gasto.id}. Tente deletá-lo.\n\n" # Mensagem de fallback
-
+           
             # --- LÓGICA DO /DELETAR ---
             elif texto_lower.startswith("/deletar"):
                 try:
@@ -246,3 +215,4 @@ async def webhook(update: Update, db: Session = Depends(get_db)): # << MUDANÇA 
 
     print("--------------------------------------------------")
     return {"status": "ok"}
+
