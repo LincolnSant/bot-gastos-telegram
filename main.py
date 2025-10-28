@@ -142,7 +142,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                 resposta += "<b>Exemplo:</b> <code>100 \"lava louça\"</code>\n\n"
                 resposta += "Comandos:\n"
                 resposta += "<code>/relatorio</code> | <code>/listar</code> | <code>/deletar [ID]</code> | <code>/zerartudo confirmar</code>\n\n" # << Quebra de linha adicionada
-                resposta += "<small>ℹ️ <i>Gastos com mais de 6 meses são removidos automaticamente.</i></small>" # << AVISO ADICIONADO
+                resposta += "ℹ️ <i>Gastos com mais de 6 meses são removidos automaticamente.</i>"
 
             # --- LÓGICA DO /RELATORIO ---
             elif texto_lower == "/relatorio":
@@ -270,3 +270,4 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
 
     print("--------------------------------------------------")
     return {"status": "ok"}
+
