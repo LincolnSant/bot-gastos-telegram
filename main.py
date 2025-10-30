@@ -5,7 +5,7 @@ from typing import Optional, List
 import os
 from sqlalchemy.orm import Session
 import re
-from datetime import datetime, timedelta # <<< Importações necessárias
+from datetime import datetime, timedelta
 
 # --- Imports do Banco de Dados ---
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, desc
@@ -45,7 +45,7 @@ app = FastAPI()
 class Gasto(Base):
     __tablename__ = "gastos"
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, index=True, nullable=False) # <<< CAMPO USER_ID
+    user_id = Column(Integer, index=True, nullable=False)
     valor = Column(Float, nullable=False)
     categoria = Column(String(100), index=True)
     descricao = Column(String(255), nullable=True)
@@ -111,7 +111,7 @@ def limpar_gastos_antigos(db: Session):
 # ------------------------------------------
 
 
-# --- WEBHOOK PRINCIPAL (COM LÓGICA MULTIUSUÁRIO) ---
+# --- WEBHOOK PRINCIPAL (COM LÓGICA MULTIUSUÁRIO CORRIGIDA) ---
 @app.post("/webhook")
 async def webhook(update: Update, db: Session = Depends(get_db)):
     chat_id = update.message.chat.id
@@ -125,6 +125,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
     resposta = ""
     parse_mode_para_resposta_atual = "HTML"
     mensagem_foi_enviada = False
+    aviso_aspas_texto = "" # (NOVO) Prepara a variável de aviso
 
     try:
         if texto:
@@ -213,18 +214,23 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                 else:
                     resposta = "⚠️ <b>Atenção!</b> Apagará TODOS os SEUS gastos.\nEnvie <code>/zerartudo confirmar</code>"
 
-            # --- LÓGICA DE SALVAR NOVO GASTO (COM USER_ID) ---
+            # --- LÓGICA DE SALVAR NOVO GASTO (COM USER_ID E CORREÇÃO DE ASPAS) ---
             else:
                 try:
-                    match = re.match(r'([\d\.,]+)\s*\"([^\"]+)\"\s*(.*)', texto, re.IGNORECASE)
+                    # (NOVO) Substitui aspas curvas por retas
+                    texto_corrigido = texto.replace("“", "\"").replace("”", "\"")
+                    
+                    partes_por_aspas = texto_corrigido.split('"')
                     aviso_aspas = False
 
-                    if match:
-                        valor_str = match.group(1).replace(',', '.')
+                    if len(partes_por_aspas) == 3:
+                        # Formato: VALOR "CATEGORIA" DESCRICAO
+                        valor_str = partes_por_aspas[0].strip().replace(',', '.')
                         valor_float = float(valor_str)
-                        categoria = match.group(2).strip()
-                        descricao = match.group(3).strip() or None
+                        categoria = partes_por_aspas[1].strip()
+                        descricao = partes_por_aspas[2].strip() or None
                     else:
+                        # Formato: VALOR CATEGORIA (talvez com descricao)
                         partes = texto.split()
                         if len(partes) < 2: raise ValueError("Faltou valor ou categoria")
                         valor_str = partes[0].replace(",", ".")
@@ -238,11 +244,10 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                             if len(partes) > 1 :
                                 aviso_aspas = True
 
-
                     if not categoria: raise ValueError("Categoria vazia")
 
                     novo_gasto = Gasto(
-                        user_id=user_id, # <<< CAMPO ADICIONADO
+                        user_id=user_id,
                         valor=valor_float,
                         categoria=categoria.lower(),
                         descricao=descricao
@@ -252,21 +257,28 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                     db.refresh(novo_gasto)
 
                     resposta = f"✅ Gasto salvo!\n<b>ID: {novo_gasto.id}</b>\n<b>Valor:</b> R$ {valor_float:.2f}\n<b>Categoria:</b> {categoria.lower()}"
-
+                    
+                    # (NOVO) Prepara o aviso para ser enviado DEPOIS
                     if aviso_aspas and resposta.startswith("✅"):
-                         aviso = (f"⚠️ Categoria '{categoria}' salva como palavra única.\n"
+                         aviso_aspas_texto = (f"⚠️ Categoria '{categoria}' salva como palavra única.\n"
                                   "Use aspas para múltiplas palavras: <code>VALOR \"CATEGORIA LONGA\"</code>")
-                         await send_message(chat_id, aviso)
 
-
-                except (ValueError, IndexError):
+                except (ValueError, IndexError) as e:
+                    print(f"❌ Erro ao parsear/salvar gasto: {e}")
                     resposta = "❌ Formato inválido. Use <code>VALOR CATEGORIA</code> ou <code>/start</code>."
 
-            # Envia a resposta SOMENTE se uma foi gerada
+            # --- ENVIO DAS MENSAGENS (FORA DO TRY/EXCEPT DE LÓGICA) ---
+            
+            # Envia a resposta principal (confirmação ou erro de formato)
             if resposta:
                 print(f"-> Preparando para enviar resposta (ParseMode={parse_mode_para_resposta_atual}): '{resposta[:50]}...'")
                 await send_message(chat_id, resposta, parse_mode=parse_mode_para_resposta_atual)
                 mensagem_foi_enviada = True
+            
+            # Envia o aviso sobre aspas SE ele foi preparado E a confirmação foi enviada
+            if aviso_aspas_texto and mensagem_foi_enviada and resposta.startswith("✅"):
+                 print("-> Enviando aviso sobre aspas...")
+                 await send_message(chat_id, aviso_aspas_texto) # Envia o aviso separado (com HTML padrão)
 
     except Exception as e:
         print(f"💥 ERRO FATAL NA FUNÇÃO WEBHOOK: {e}")
