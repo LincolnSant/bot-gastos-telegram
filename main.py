@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timedelta
 
 # --- Imports do Banco de Dados ---
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, desc
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, desc, BigInteger
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import func
 # ---------------------------------
@@ -45,8 +45,9 @@ app = FastAPI()
 class Gasto(Base):
     __tablename__ = "gastos"
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, index=True, nullable=False)
+    user_id = Column(BigInteger, index=True, nullable=False) # <<< TIPO NOVO (BIGINTEGER)
     valor = Column(Float, nullable=False)
+    #...
     categoria = Column(String(100), index=True)
     descricao = Column(String(255), nullable=True)
     data_criacao = Column(DateTime(timezone=True), server_default=func.now())
@@ -290,3 +291,4 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
 
     print("--------------------------------------------------")
     return {"status": "ok"}
+
