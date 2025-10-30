@@ -5,7 +5,7 @@ from typing import Optional, List
 import os
 from sqlalchemy.orm import Session
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta # <<< Importações necessárias
 
 # --- Imports do Banco de Dados ---
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, desc
@@ -41,11 +41,11 @@ def get_db():
 app = FastAPI()
 
 
-# --- MODELO DA TABELA DO BANCO (COM USER_ID) --- # <<< MUDANÇA AQUI
+# --- MODELO DA TABELA DO BANCO (COM USER_ID) ---
 class Gasto(Base):
     __tablename__ = "gastos"
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, index=True, nullable=False) # <<< ADICIONADO CAMPO USER_ID
+    user_id = Column(Integer, index=True, nullable=False) # <<< CAMPO USER_ID
     valor = Column(Float, nullable=False)
     categoria = Column(String(100), index=True)
     descricao = Column(String(255), nullable=True)
@@ -60,7 +60,7 @@ class Chat(BaseModel):
     id: int
 class Message(BaseModel):
     message_id: int
-    from_user: User = Field(..., alias='from') # <<< USER_ID VEM DE DENTRO DESTE
+    from_user: User = Field(..., alias='from')
     chat: Chat
     text: Optional[str] = None
 class Update(BaseModel):
@@ -98,38 +98,32 @@ async def send_message(chat_id: int, text: str, parse_mode: Optional[str] = "HTM
             print(f"⚠️ Erro inesperado ao enviar mensagem: {e}")
 
 
-# --- (NOVO) FUNÇÃO DE LIMPEZA DE DADOS (AGORA FILTRA POR USER_ID) ---
-# Esta função não é chamada pelo webhook, mas pelo cron_job.py
+# --- FUNÇÃO DE LIMPEZA DE DADOS ---
 def limpar_gastos_antigos(db: Session):
     dias_para_manter = 180
     data_limite = datetime.now() - timedelta(days=dias_para_manter)
-
-    # Deleta gastos antigos (não precisa filtrar por usuário, é uma limpeza geral)
     num_deletados = db.query(Gasto).filter(
         Gasto.data_criacao < data_limite
     ).delete(synchronize_session=False)
-
     db.commit()
-
     print(f"🗑️ Limpeza executada. {num_deletados} gastos anteriores a {data_limite.strftime('%Y-%m-%d')} foram apagados.")
     return num_deletados
 # ------------------------------------------
 
 
-# --- WEBHOOK PRINCIPAL (COM LÓGICA MULTIUSUÁRIO) --- # <<< GRANDES MUDANÇAS AQUI
+# --- WEBHOOK PRINCIPAL (COM LÓGICA MULTIUSUÁRIO) ---
 @app.post("/webhook")
 async def webhook(update: Update, db: Session = Depends(get_db)):
-    # Pega os dados básicos da mensagem
     chat_id = update.message.chat.id
     texto = update.message.text
     nome_usuario = update.message.from_user.first_name
-    user_id = update.message.from_user.id # <<< PEGA O ID DO USUÁRIO AQUI
+    user_id = update.message.from_user.id
 
-    print(f"--- MENSAGEM RECEBIDA (Chat ID: {chat_id}, User ID: {user_id}) ---") # Log do User ID
+    print(f"--- MENSAGEM RECEBIDA (Chat ID: {chat_id}, User ID: {user_id}) ---")
     print(f"De: {nome_usuario} | Texto: {texto}")
 
     resposta = ""
-    parse_mode_para_resposta_atual = "HTML" # Padrão HTML
+    parse_mode_para_resposta_atual = "HTML"
     mensagem_foi_enviada = False
 
     try:
@@ -151,24 +145,24 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
             elif texto_lower == "/relatorio":
                 consulta = db.query(
                     Gasto.categoria, func.sum(Gasto.valor)
-                ).filter(Gasto.user_id == user_id).group_by(Gasto.categoria).all() # <<< FILTRO ADICIONADO
+                ).filter(Gasto.user_id == user_id).group_by(Gasto.categoria).all()
 
                 total_geral = 0
-                resposta = "📊 <b>Seu Relatório por Categoria</b> 📊\n\n" # Título modificado
+                resposta = "📊 <b>Seu Relatório por Categoria</b> 📊\n\n"
                 if not consulta:
                     resposta += "Nenhum gasto registrado ainda."
                 else:
                     for categoria, total in consulta:
                         resposta += f"<b>{categoria.capitalize()}:</b> R$ {total:.2f}\n"
                         total_geral += total
-                    resposta += f"\n──────────\n<b>SEU TOTAL: R$ {total_geral:.2f}</b>" # Título modificado
+                    resposta += f"\n──────────\n<b>SEU TOTAL: R$ {total_geral:.2f}</b>"
 
             # --- LÓGICA DO /LISTAR (COM FILTRO) ---
             elif texto_lower == "/listar":
                 parse_mode_para_resposta_atual = None
-                consulta = db.query(Gasto).filter(Gasto.user_id == user_id).order_by(Gasto.id.desc()).limit(5).all() # <<< FILTRO ADICIONADO
+                consulta = db.query(Gasto).filter(Gasto.user_id == user_id).order_by(Gasto.id.desc()).limit(5).all()
 
-                resposta = "📋 Seus Últimos 5 Gastos 📋\n\n" # Título modificado
+                resposta = "📋 Seus Últimos 5 Gastos 📋\n\n"
                 if not consulta:
                     resposta += "Nenhum gasto registrado ainda."
                 else:
@@ -194,9 +188,8 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                     partes = texto.split()
                     if len(partes) != 2: raise ValueError("Formato incorreto")
                     id_para_deletar = int(partes[1])
-                    # Busca o gasto PELO ID E PELO USER_ID
                     gasto = db.query(Gasto).filter(
-                        Gasto.id == id_para_deletar, Gasto.user_id == user_id # <<< FILTRO DUPLO
+                        Gasto.id == id_para_deletar, Gasto.user_id == user_id
                     ).first()
 
                     if gasto:
@@ -214,8 +207,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
             elif texto_lower.startswith("/zerartudo"):
                 partes = texto.split()
                 if len(partes) == 2 and partes[1] == "confirmar":
-                    # Deleta APENAS os gastos DO USUÁRIO ATUAL
-                    num_deletados = db.query(Gasto).filter(Gasto.user_id == user_id).delete() # <<< FILTRO ADICIONADO
+                    num_deletados = db.query(Gasto).filter(Gasto.user_id == user_id).delete()
                     db.commit()
                     resposta = f"🔥 Todos os seus <b>{num_deletados}</b> gastos foram apagados!"
                 else:
@@ -249,7 +241,6 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
 
                     if not categoria: raise ValueError("Categoria vazia")
 
-                    # <<< ADICIONA O USER_ID AO SALVAR >>>
                     novo_gasto = Gasto(
                         user_id=user_id, # <<< CAMPO ADICIONADO
                         valor=valor_float,
