@@ -1,11 +1,11 @@
 import httpx
 from fastapi import FastAPI, Depends
 from pydantic import BaseModel, Field
-from typing import Optional, List # << Incluí o List que faltava
+from typing import Optional, List
 import os
 from sqlalchemy.orm import Session
 import re
-from datetime import datetime, timedelta # <<< ADICIONADO PARA A LIMPEZA
+from datetime import datetime, timedelta
 
 # --- Imports do Banco de Dados ---
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, desc
@@ -19,7 +19,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 # 🔧 CORREÇÃO AUTOMÁTICA PARA O RENDER (postgres:// → postgresql://)
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1) # Corrigido para substituir apenas uma vez
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # --- Config do Banco de Dados ---
@@ -41,10 +41,11 @@ def get_db():
 app = FastAPI()
 
 
-# --- MODELO DA TABELA DO BANCO ---
+# --- MODELO DA TABELA DO BANCO (COM USER_ID) --- # <<< MUDANÇA AQUI
 class Gasto(Base):
     __tablename__ = "gastos"
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, index=True, nullable=False) # <<< ADICIONADO CAMPO USER_ID
     valor = Column(Float, nullable=False)
     categoria = Column(String(100), index=True)
     descricao = Column(String(255), nullable=True)
@@ -59,7 +60,7 @@ class Chat(BaseModel):
     id: int
 class Message(BaseModel):
     message_id: int
-    from_user: User = Field(..., alias='from')
+    from_user: User = Field(..., alias='from') # <<< USER_ID VEM DE DENTRO DESTE
     chat: Chat
     text: Optional[str] = None
 class Update(BaseModel):
@@ -76,11 +77,11 @@ def on_startup():
     except Exception as e:
         print(f"ERRO CRÍTICO DURANTE CRIAÇÃO DAS TABELAS: {e}")
 
-# --- FUNÇÃO DE RESPOSTA (COM PARSE_MODE OPCIONAL E ERRO DETALHADO) --- # <<< CORRIGIDO AQUI
+# --- FUNÇÃO DE RESPOSTA (COM PARSE_MODE OPCIONAL) ---
 async def send_message(chat_id: int, text: str, parse_mode: Optional[str] = "HTML"):
     url = f"{TELEGRAM_API_URL}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
-    if parse_mode: # Adiciona parse_mode apenas se não for None
+    if parse_mode:
         payload["parse_mode"] = parse_mode
 
     async with httpx.AsyncClient(timeout=10) as client:
@@ -88,23 +89,22 @@ async def send_message(chat_id: int, text: str, parse_mode: Optional[str] = "HTM
             response = await client.post(url, json=payload)
             if response.status_code != 200:
                  print(f"⚠️ Telegram API Error {response.status_code}: {response.text}")
-            response.raise_for_status() # Lança erro se for 4xx/5xx
+            response.raise_for_status()
         except httpx.HTTPStatusError as e:
             print(f"⚠️ Erro HTTP ao enviar mensagem: Status {e.response.status_code}")
-            # Se o erro for por mensagem muito longa, loga isso especificamente
             if e.response.status_code == 400 and "message is too long" in e.response.text.lower():
                 print(">>> ERRO DETECTADO: Mensagem excedeu o limite de 4096 caracteres do Telegram.")
         except Exception as e:
             print(f"⚠️ Erro inesperado ao enviar mensagem: {e}")
 
 
-# --- (NOVO) FUNÇÃO DE LIMPEZA DE DADOS ---
+# --- (NOVO) FUNÇÃO DE LIMPEZA DE DADOS (AGORA FILTRA POR USER_ID) ---
+# Esta função não é chamada pelo webhook, mas pelo cron_job.py
 def limpar_gastos_antigos(db: Session):
-    # Define o período de 6 meses (aprox. 180 dias)
     dias_para_manter = 180
     data_limite = datetime.now() - timedelta(days=dias_para_manter)
 
-    # Executa o DELETE no banco de dados
+    # Deleta gastos antigos (não precisa filtrar por usuário, é uma limpeza geral)
     num_deletados = db.query(Gasto).filter(
         Gasto.data_criacao < data_limite
     ).delete(synchronize_session=False)
@@ -116,14 +116,16 @@ def limpar_gastos_antigos(db: Session):
 # ------------------------------------------
 
 
-# --- WEBHOOK PRINCIPAL ---
+# --- WEBHOOK PRINCIPAL (COM LÓGICA MULTIUSUÁRIO) --- # <<< GRANDES MUDANÇAS AQUI
 @app.post("/webhook")
 async def webhook(update: Update, db: Session = Depends(get_db)):
+    # Pega os dados básicos da mensagem
     chat_id = update.message.chat.id
     texto = update.message.text
     nome_usuario = update.message.from_user.first_name
+    user_id = update.message.from_user.id # <<< PEGA O ID DO USUÁRIO AQUI
 
-    print(f"--- MENSAGEM RECEBIDA (Chat ID: {chat_id}) ---")
+    print(f"--- MENSAGEM RECEBIDA (Chat ID: {chat_id}, User ID: {user_id}) ---") # Log do User ID
     print(f"De: {nome_usuario} | Texto: {texto}")
 
     resposta = ""
@@ -143,26 +145,30 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                 resposta += "<b>Exemplo:</b> <code>100 \"lava louça\"</code>\n\n"
                 resposta += "Comandos:\n"
                 resposta += "<code>/relatorio</code> | <code>/listar</code> | <code>/deletar [ID]</code> | <code>/zerartudo confirmar</code>\n\n"
-                resposta += "ℹ️ <i>Gastos com mais de 6 meses são removidos automaticamente.</i>" # Removido <small>
+                resposta += "ℹ️ <i>Gastos com mais de 6 meses são removidos automaticamente.</i>"
 
-            # --- LÓGICA DO /RELATORIO ---
+            # --- LÓGICA DO /RELATORIO (COM FILTRO) ---
             elif texto_lower == "/relatorio":
-                consulta = db.query(Gasto.categoria, func.sum(Gasto.valor)).group_by(Gasto.categoria).all()
+                consulta = db.query(
+                    Gasto.categoria, func.sum(Gasto.valor)
+                ).filter(Gasto.user_id == user_id).group_by(Gasto.categoria).all() # <<< FILTRO ADICIONADO
+
                 total_geral = 0
-                resposta = "📊 <b>Relatório por Categoria</b> 📊\n\n"
+                resposta = "📊 <b>Seu Relatório por Categoria</b> 📊\n\n" # Título modificado
                 if not consulta:
-                    resposta += "Nenhum gasto registrado."
+                    resposta += "Nenhum gasto registrado ainda."
                 else:
                     for categoria, total in consulta:
                         resposta += f"<b>{categoria.capitalize()}:</b> R$ {total:.2f}\n"
                         total_geral += total
-                    resposta += f"\n──────────\n<b>TOTAL: R$ {total_geral:.2f}</b>"
+                    resposta += f"\n──────────\n<b>SEU TOTAL: R$ {total_geral:.2f}</b>" # Título modificado
 
-            # --- LÓGICA DO /LISTAR (SEM HTML) --- # <<< CORRIGIDO AQUI
+            # --- LÓGICA DO /LISTAR (COM FILTRO) ---
             elif texto_lower == "/listar":
-                parse_mode_para_resposta_atual = None # Desliga HTML para esta resposta
-                consulta = db.query(Gasto).order_by(Gasto.id.desc()).limit(5).all()
-                resposta = "📋 Últimos 5 Gastos Registrados 📋\n\n"
+                parse_mode_para_resposta_atual = None
+                consulta = db.query(Gasto).filter(Gasto.user_id == user_id).order_by(Gasto.id.desc()).limit(5).all() # <<< FILTRO ADICIONADO
+
+                resposta = "📋 Seus Últimos 5 Gastos 📋\n\n" # Título modificado
                 if not consulta:
                     resposta += "Nenhum gasto registrado ainda."
                 else:
@@ -182,36 +188,40 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                             resposta += f"⚠️ Erro ao exibir Gasto ID {gasto.id}\n"
                 resposta += "\n(Mostrando os últimos 5)"
 
-            # --- LÓGICA DO /DELETAR ---
+            # --- LÓGICA DO /DELETAR (COM FILTRO) ---
             elif texto_lower.startswith("/deletar"):
                 try:
                     partes = texto.split()
                     if len(partes) != 2: raise ValueError("Formato incorreto")
                     id_para_deletar = int(partes[1])
-                    gasto = db.query(Gasto).filter(Gasto.id == id_para_deletar).first()
+                    # Busca o gasto PELO ID E PELO USER_ID
+                    gasto = db.query(Gasto).filter(
+                        Gasto.id == id_para_deletar, Gasto.user_id == user_id # <<< FILTRO DUPLO
+                    ).first()
 
                     if gasto:
                         valor_gasto = gasto.valor
                         db.delete(gasto)
                         db.commit()
-                        resposta = f"✅ Gasto <b>ID {id_para_deletar}</b> (R$ {valor_gasto:.2f}) deletado."
+                        resposta = f"✅ Seu gasto <b>ID {id_para_deletar}</b> (R$ {valor_gasto:.2f}) foi deletado."
                     else:
-                        resposta = f"❌ Gasto com <b>ID {id_para_deletar}</b> não encontrado."
+                        resposta = f"❌ Gasto com <b>ID {id_para_deletar}</b> não encontrado ou não pertence a você."
 
                 except (IndexError, ValueError):
                     resposta = "❌ Uso: <code>/deletar [NÚMERO_ID]</code> (veja IDs com /listar)"
 
-            # --- LÓGICA DO /ZERARTUDO ---
+            # --- LÓGICA DO /ZERARTUDO (COM FILTRO) ---
             elif texto_lower.startswith("/zerartudo"):
                 partes = texto.split()
                 if len(partes) == 2 and partes[1] == "confirmar":
-                    num = db.query(Gasto).delete()
+                    # Deleta APENAS os gastos DO USUÁRIO ATUAL
+                    num_deletados = db.query(Gasto).filter(Gasto.user_id == user_id).delete() # <<< FILTRO ADICIONADO
                     db.commit()
-                    resposta = f"🔥 Todos os <b>{num}</b> gastos foram apagados!"
+                    resposta = f"🔥 Todos os seus <b>{num_deletados}</b> gastos foram apagados!"
                 else:
-                    resposta = "⚠️ <b>Atenção!</b> Apagará TUDO.\nEnvie <code>/zerartudo confirmar</code>"
+                    resposta = "⚠️ <b>Atenção!</b> Apagará TODOS os SEUS gastos.\nEnvie <code>/zerartudo confirmar</code>"
 
-            # --- LÓGICA DE SALVAR NOVO GASTO ---
+            # --- LÓGICA DE SALVAR NOVO GASTO (COM USER_ID) ---
             else:
                 try:
                     match = re.match(r'([\d\.,]+)\s*\"([^\"]+)\"\s*(.*)', texto, re.IGNORECASE)
@@ -233,13 +243,19 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                             aviso_aspas = True
                         else:
                             descricao = None
-                            if len(partes) > 1 : # Avisa se tiver só valor e categoria
+                            if len(partes) > 1 :
                                 aviso_aspas = True
 
 
                     if not categoria: raise ValueError("Categoria vazia")
 
-                    novo_gasto = Gasto(valor=valor_float, categoria=categoria.lower(), descricao=descricao)
+                    # <<< ADICIONA O USER_ID AO SALVAR >>>
+                    novo_gasto = Gasto(
+                        user_id=user_id, # <<< CAMPO ADICIONADO
+                        valor=valor_float,
+                        categoria=categoria.lower(),
+                        descricao=descricao
+                    )
                     db.add(novo_gasto)
                     db.commit()
                     db.refresh(novo_gasto)
@@ -249,7 +265,6 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                     if aviso_aspas and resposta.startswith("✅"):
                          aviso = (f"⚠️ Categoria '{categoria}' salva como palavra única.\n"
                                   "Use aspas para múltiplas palavras: <code>VALOR \"CATEGORIA LONGA\"</code>")
-                         # Envia o aviso separadamente (mantendo HTML padrão)
                          await send_message(chat_id, aviso)
 
 
@@ -259,15 +274,14 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
             # Envia a resposta SOMENTE se uma foi gerada
             if resposta:
                 print(f"-> Preparando para enviar resposta (ParseMode={parse_mode_para_resposta_atual}): '{resposta[:50]}...'")
-                # Passa o parse_mode correto para a função
                 await send_message(chat_id, resposta, parse_mode=parse_mode_para_resposta_atual)
                 mensagem_foi_enviada = True
 
     except Exception as e:
         print(f"💥 ERRO FATAL NA FUNÇÃO WEBHOOK: {e}")
         try:
-            # Tenta enviar erro com HTML padrão
-            await send_message(chat_id, "❌ Desculpe, ocorreu um erro fatal no servidor. Tente novamente.")
+            if not mensagem_foi_enviada:
+                 await send_message(chat_id, "❌ Desculpe, ocorreu um erro fatal no servidor. Tente novamente.")
         except:
             pass
 
