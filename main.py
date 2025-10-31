@@ -41,12 +41,13 @@ def get_db():
 app = FastAPI()
 
 
-# --- MODELO DA TABELA DO BANCO (COM USER_ID) ---
 class Gasto(Base):
     __tablename__ = "gastos"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(BigInteger, index=True, nullable=False) # <<< TIPO NOVO (BIGINTEGER)
+    id = Column(Integer, primary_key=True, index=True) # ID Global (PK)
+    user_id = Column(BigInteger, index=True, nullable=False) # ID do Usuário Telegram
+    id_local_usuario = Column(Integer, index=True, nullable=False) # <<< ID LOCAL (1, 2, 3... por usuário)
     valor = Column(Float, nullable=False)
+    #...
     #...
     categoria = Column(String(100), index=True)
     descricao = Column(String(255), nullable=True)
@@ -112,7 +113,7 @@ def limpar_gastos_antigos(db: Session):
 # ------------------------------------------
 
 
-# --- WEBHOOK PRINCIPAL (COM LÓGICA MULTIUSUÁRIO CORRIGIDA) ---
+# --- WEBHOOK PRINCIPAL (COM LÓGICA DE ID LOCAL) ---
 @app.post("/webhook")
 async def webhook(update: Update, db: Session = Depends(get_db)):
     chat_id = update.message.chat.id
@@ -126,7 +127,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
     resposta = ""
     parse_mode_para_resposta_atual = "HTML"
     mensagem_foi_enviada = False
-    aviso_aspas_texto = "" # (NOVO) Prepara a variável de aviso
+    aviso_aspas_texto = "" 
 
     try:
         if texto:
@@ -143,12 +144,11 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                 resposta += "<code>/relatorio</code> | <code>/listar</code> | <code>/deletar [ID]</code> | <code>/zerartudo confirmar</code>\n\n"
                 resposta += "ℹ️ <i>Gastos com mais de 6 meses são removidos automaticamente.</i>"
 
-            # --- LÓGICA DO /RELATORIO (COM FILTRO) ---
+            # --- LÓGICA DO /RELATORIO (Sem mudança) ---
             elif texto_lower == "/relatorio":
                 consulta = db.query(
                     Gasto.categoria, func.sum(Gasto.valor)
                 ).filter(Gasto.user_id == user_id).group_by(Gasto.categoria).all()
-
                 total_geral = 0
                 resposta = "📊 <b>Seu Relatório por Categoria</b> 📊\n\n"
                 if not consulta:
@@ -159,10 +159,11 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                         total_geral += total
                     resposta += f"\n──────────\n<b>SEU TOTAL: R$ {total_geral:.2f}</b>"
 
-            # --- LÓGICA DO /LISTAR (COM FILTRO) ---
+            # --- LÓGICA DO /LISTAR (USA ID LOCAL) ---
             elif texto_lower == "/listar":
                 parse_mode_para_resposta_atual = None
-                consulta = db.query(Gasto).filter(Gasto.user_id == user_id).order_by(Gasto.id.desc()).limit(5).all()
+                # Ordena pelo ID local, do mais novo para o mais antigo
+                consulta = db.query(Gasto).filter(Gasto.user_id == user_id).order_by(Gasto.id_local_usuario.desc()).limit(5).all()
 
                 resposta = "📋 Seus Últimos 5 Gastos 📋\n\n"
                 if not consulta:
@@ -174,7 +175,8 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                             if gasto.data_criacao:
                                 data_formatada = gasto.data_criacao.strftime('%d/%m %H:%M')
 
-                            linha = f"ID {gasto.id}: R$ {gasto.valor:.2f} ({gasto.categoria})"
+                            # <<< MOSTRA O ID LOCAL >>>
+                            linha = f"ID {gasto.id_local_usuario}: R$ {gasto.valor:.2f} ({gasto.categoria})" 
                             if gasto.descricao:
                                 linha += f" - {gasto.descricao}"
                             linha += f" [{data_formatada}]\n"
@@ -184,28 +186,31 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                             resposta += f"⚠️ Erro ao exibir Gasto ID {gasto.id}\n"
                 resposta += "\n(Mostrando os últimos 5)"
 
-            # --- LÓGICA DO /DELETAR (COM FILTRO) ---
+            # --- LÓGICA DO /DELETAR (USA ID LOCAL) ---
             elif texto_lower.startswith("/deletar"):
                 try:
                     partes = texto.split()
                     if len(partes) != 2: raise ValueError("Formato incorreto")
-                    id_para_deletar = int(partes[1])
+                    id_local_para_deletar = int(partes[1])
+                    
+                    # <<< BUSCA PELO ID LOCAL E USER_ID >>>
                     gasto = db.query(Gasto).filter(
-                        Gasto.id == id_para_deletar, Gasto.user_id == user_id
+                        Gasto.id_local_usuario == id_local_para_deletar, 
+                        Gasto.user_id == user_id
                     ).first()
 
                     if gasto:
                         valor_gasto = gasto.valor
                         db.delete(gasto)
                         db.commit()
-                        resposta = f"✅ Seu gasto <b>ID {id_para_deletar}</b> (R$ {valor_gasto:.2f}) foi deletado."
+                        resposta = f"✅ Seu gasto <b>ID {id_local_para_deletar}</b> (R$ {valor_gasto:.2f}) foi deletado."
                     else:
-                        resposta = f"❌ Gasto com <b>ID {id_para_deletar}</b> não encontrado ou não pertence a você."
+                        resposta = f"❌ Gasto com <b>ID {id_local_para_deletar}</b> não encontrado ou não pertence a você."
 
                 except (IndexError, ValueError):
                     resposta = "❌ Uso: <code>/deletar [NÚMERO_ID]</code> (veja IDs com /listar)"
 
-            # --- LÓGICA DO /ZERARTUDO (COM FILTRO) ---
+            # --- LÓGICA DO /ZERARTUDO (Sem mudança) ---
             elif texto_lower.startswith("/zerartudo"):
                 partes = texto.split()
                 if len(partes) == 2 and partes[1] == "confirmar":
@@ -215,23 +220,20 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                 else:
                     resposta = "⚠️ <b>Atenção!</b> Apagará TODOS os SEUS gastos.\nEnvie <code>/zerartudo confirmar</code>"
 
-            # --- LÓGICA DE SALVAR NOVO GASTO (COM USER_ID E CORREÇÃO DE ASPAS) ---
+            # --- LÓGICA DE SALVAR NOVO GASTO (CALCULA ID LOCAL) ---
             else:
                 try:
-                    # (NOVO) Substitui aspas curvas por retas
+                    # (Parser de aspas)
                     texto_corrigido = texto.replace("“", "\"").replace("”", "\"")
-                    
                     partes_por_aspas = texto_corrigido.split('"')
                     aviso_aspas = False
 
                     if len(partes_por_aspas) == 3:
-                        # Formato: VALOR "CATEGORIA" DESCRICAO
                         valor_str = partes_por_aspas[0].strip().replace(',', '.')
                         valor_float = float(valor_str)
                         categoria = partes_por_aspas[1].strip()
                         descricao = partes_por_aspas[2].strip() or None
                     else:
-                        # Formato: VALOR CATEGORIA (talvez com descricao)
                         partes = texto.split()
                         if len(partes) < 2: raise ValueError("Faltou valor ou categoria")
                         valor_str = partes[0].replace(",", ".")
@@ -247,8 +249,19 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
 
                     if not categoria: raise ValueError("Categoria vazia")
 
+                    # --- (NOVA LÓGICA DE ID LOCAL) ---
+                    # 1. Encontra o ID local mais alto para este usuário
+                    ultimo_id_local_obj = db.query(func.max(Gasto.id_local_usuario)).filter(Gasto.user_id == user_id).scalar()
+                    
+                    # 2. Calcula o novo ID
+                    novo_id_local = 1
+                    if ultimo_id_local_obj is not None:
+                        novo_id_local = ultimo_id_local_obj + 1
+                    # --- FIM DA LÓGICA DE ID LOCAL ---
+
                     novo_gasto = Gasto(
                         user_id=user_id,
+                        id_local_usuario=novo_id_local, # <<< CAMPO ADICIONADO
                         valor=valor_float,
                         categoria=categoria.lower(),
                         descricao=descricao
@@ -257,9 +270,8 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                     db.commit()
                     db.refresh(novo_gasto)
 
-                    resposta = f"✅ Gasto salvo!\n<b>ID: {novo_gasto.id}</b>\n<b>Valor:</b> R$ {valor_float:.2f}\n<b>Categoria:</b> {categoria.lower()}"
+                    resposta = f"✅ Gasto salvo!\n<b>ID: {novo_gasto.id_local_usuario}</b>\n<b>Valor:</b> R$ {valor_float:.2f}\n<b>Categoria:</b> {categoria.lower()}" # Mostra o ID local
                     
-                    # (NOVO) Prepara o aviso para ser enviado DEPOIS
                     if aviso_aspas and resposta.startswith("✅"):
                          aviso_aspas_texto = (f"⚠️ Categoria '{categoria}' salva como palavra única.\n"
                                   "Use aspas para múltiplas palavras: <code>VALOR \"CATEGORIA LONGA\"</code>")
@@ -268,18 +280,15 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                     print(f"❌ Erro ao parsear/salvar gasto: {e}")
                     resposta = "❌ Formato inválido. Use <code>VALOR CATEGORIA</code> ou <code>/start</code>."
 
-            # --- ENVIO DAS MENSAGENS (FORA DO TRY/EXCEPT DE LÓGICA) ---
-            
-            # Envia a resposta principal (confirmação ou erro de formato)
+            # --- ENVIO DAS MENSAGENS ---
             if resposta:
                 print(f"-> Preparando para enviar resposta (ParseMode={parse_mode_para_resposta_atual}): '{resposta[:50]}...'")
                 await send_message(chat_id, resposta, parse_mode=parse_mode_para_resposta_atual)
                 mensagem_foi_enviada = True
             
-            # Envia o aviso sobre aspas SE ele foi preparado E a confirmação foi enviada
             if aviso_aspas_texto and mensagem_foi_enviada and resposta.startswith("✅"):
                  print("-> Enviando aviso sobre aspas...")
-                 await send_message(chat_id, aviso_aspas_texto) # Envia o aviso separado (com HTML padrão)
+                 await send_message(chat_id, aviso_aspas_texto)
 
     except Exception as e:
         print(f"💥 ERRO FATAL NA FUNÇÃO WEBHOOK: {e}")
@@ -291,4 +300,5 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
 
     print("--------------------------------------------------")
     return {"status": "ok"}
+
 
