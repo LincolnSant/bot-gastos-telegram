@@ -133,17 +133,21 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
         if texto:
             texto_lower = texto.lower().strip()
 
-            # --- LÓGICA DO /START ---
-            if texto_lower == "/start":
+          # --- LÓGICA DO /START (MELHORADA) ---
+            if texto_lower.strip() == "/start":
                 resposta = f"Olá, <b>{nome_usuario}</b>! 👋\n\n"
-                resposta += "Para anotar um gasto, envie:\n"
-                resposta += "<code>VALOR \"CATEGORIA\" (descrição)</code>\n"
-                resposta += "<b>Exemplo:</b> <code>15.50 padaria</code>\n"
-                resposta += "<b>Exemplo:</b> <code>100 \"lava louça\"</code>\n\n"
-                resposta += "Comandos:\n"
-                resposta += "<code>/relatorio</code> | <code>/listar</code> | <code>/deletar [ID]</code> | <code>/zerartudo confirmar</code>\n\n"
+                resposta += "<b>Como anotar um gasto:</b>\n"
+                resposta += "<code>15.50 padaria</code> (categoria de 1 palavra)\n"
+                resposta += "<code>100 \"lava louça\"</code> (categoria longa com aspas)\n"
+                resposta += "<code>120 \"supermercado\" compra do mês</code> (com descrição)\n\n"
+                
+                resposta += "<b>Comandos disponíveis:</b>\n"
+                resposta += "<code>/listar</code> - Vê os 5 últimos gastos (com ID).\n"
+                resposta += "<code>/relatorio</code> - Vê o resumo total por categoria.\n"
+                resposta += "<code>/deletar [ID]</code> - Apaga um gasto específico.\n"
+                resposta += "<code>/zerartudo</code> - Apaga TODOS os seus gastos.\n\n"
+                
                 resposta += "ℹ️ <i>Gastos com mais de 6 meses são removidos automaticamente.</i>"
-
             # --- LÓGICA DO /RELATORIO (Sem mudança) ---
             elif texto_lower == "/relatorio":
                 consulta = db.query(
@@ -300,5 +304,6 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
 
     print("--------------------------------------------------")
     return {"status": "ok"}
+
 
 
