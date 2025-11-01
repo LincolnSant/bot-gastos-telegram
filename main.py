@@ -41,14 +41,13 @@ def get_db():
 app = FastAPI()
 
 
+# --- MODELO DA TABELA DO BANCO (COM BIGINTEGER E ID LOCAL) ---
 class Gasto(Base):
     __tablename__ = "gastos"
-    id = Column(Integer, primary_key=True, index=True) # ID Global (PK)
-    user_id = Column(BigInteger, index=True, nullable=False) # ID do Usuário Telegram
-    id_local_usuario = Column(Integer, index=True, nullable=False) # <<< ID LOCAL (1, 2, 3... por usuário)
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(BigInteger, index=True, nullable=False)
+    id_local_usuario = Column(Integer, index=True, nullable=False)
     valor = Column(Float, nullable=False)
-    #...
-    #...
     categoria = Column(String(100), index=True)
     descricao = Column(String(255), nullable=True)
     data_criacao = Column(DateTime(timezone=True), server_default=func.now())
@@ -113,7 +112,7 @@ def limpar_gastos_antigos(db: Session):
 # ------------------------------------------
 
 
-# --- WEBHOOK PRINCIPAL (COM LÓGICA DE ID LOCAL) ---
+# --- WEBHOOK PRINCIPAL (COM CORREÇÃO DE COMANDOS SEM BARRA) ---
 @app.post("/webhook")
 async def webhook(update: Update, db: Session = Depends(get_db)):
     chat_id = update.message.chat.id
@@ -131,25 +130,29 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
 
     try:
         if texto:
-            texto_lower = texto.lower().strip()
+            texto_lower = texto.lower().strip() 
+            
+            comando_limpo = texto_lower
+            if texto_lower.startswith('/'):
+                comando_limpo = texto_lower[1:] 
 
-          # --- LÓGICA DO /START (MELHORADA) ---
-            if texto_lower.strip() == "/start":
+            # --- LÓGICA DO /START ---
+            if comando_limpo == "start":
                 resposta = f"Olá, <b>{nome_usuario}</b>! 👋\n\n"
                 resposta += "<b>Como anotar um gasto:</b>\n"
                 resposta += "<code>15.50 padaria</code> (categoria de 1 palavra)\n"
                 resposta += "<code>100 \"lava louça\"</code> (categoria longa com aspas)\n"
                 resposta += "<code>120 \"supermercado\" compra do mês</code> (com descrição)\n\n"
-                
                 resposta += "<b>Comandos disponíveis:</b>\n"
                 resposta += "<code>/listar</code> - Vê os 5 últimos gastos (com ID).\n"
                 resposta += "<code>/relatorio</code> - Vê o resumo total por categoria.\n"
-                resposta += "<code>/deletar [ID]</code> - Apaga um gasto específico.\n"
+                # <<< MUDANÇA AQUI (AJUDA DO /DELETAR) ---
+                resposta += "<code>/deletar [IDs]</code> - Apaga um ou mais gastos (Ex: <code>/deletar 1,3,5</code>)\n"
                 resposta += "<code>/zerartudo</code> - Apaga TODOS os seus gastos.\n\n"
-                
                 resposta += "ℹ️ <i>Gastos com mais de 6 meses são removidos automaticamente.</i>"
-            # --- LÓGICA DO /RELATORIO (Sem mudança) ---
-            elif texto_lower == "/relatorio":
+
+            # --- LÓGICA DO /RELATORIO ---
+            elif comando_limpo == "relatorio":
                 consulta = db.query(
                     Gasto.categoria, func.sum(Gasto.valor)
                 ).filter(Gasto.user_id == user_id).group_by(Gasto.categoria).all()
@@ -163,12 +166,10 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                         total_geral += total
                     resposta += f"\n──────────\n<b>SEU TOTAL: R$ {total_geral:.2f}</b>"
 
-            # --- LÓGICA DO /LISTAR (USA ID LOCAL) ---
-            elif texto_lower == "/listar":
+            # --- LÓGICA DO /LISTAR ---
+            elif comando_limpo == "listar":
                 parse_mode_para_resposta_atual = None
-                # Ordena pelo ID local, do mais novo para o mais antigo
                 consulta = db.query(Gasto).filter(Gasto.user_id == user_id).order_by(Gasto.id_local_usuario.desc()).limit(5).all()
-
                 resposta = "📋 Seus Últimos 5 Gastos 📋\n\n"
                 if not consulta:
                     resposta += "Nenhum gasto registrado ainda."
@@ -178,9 +179,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                             data_formatada = "Sem Data"
                             if gasto.data_criacao:
                                 data_formatada = gasto.data_criacao.strftime('%d/%m %H:%M')
-
-                            # <<< MOSTRA O ID LOCAL >>>
-                            linha = f"ID {gasto.id_local_usuario}: R$ {gasto.valor:.2f} ({gasto.categoria})" 
+                            linha = f"ID {gasto.id_local_usuario}: R$ {gasto.valor:.2f} ({gasto.categoria})"
                             if gasto.descricao:
                                 linha += f" - {gasto.descricao}"
                             linha += f" [{data_formatada}]\n"
@@ -190,20 +189,28 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                             resposta += f"⚠️ Erro ao exibir Gasto ID {gasto.id}\n"
                 resposta += "\n(Mostrando os últimos 5)"
 
-         # --- LÓGICA DO /DELETAR (COM MÚLTIPLOS IDs) ---
+            # --- LÓGICA DO /DELETAR (COM MÚLTIPLOS IDs POR VÍRGULA) --- # <<< MUDANÇA AQUI
             elif comando_limpo.startswith("deletar"):
                 try:
-                    partes = comando_limpo.split()
-                    if len(partes) < 2: # Precisa ter pelo menos um ID
-                        raise ValueError("Formato incorreto, faltou o ID")
+                    # Divide o comando em "deletar" e "o resto"
+                    partes = comando_limpo.split(maxsplit=1) 
+                    if len(partes) != 2 or not partes[1]: # Checa se escreveu "/deletar" ou "/deletar "
+                        raise ValueError("Formato incorreto, faltou o(s) ID(s)")
                     
-                    ids_para_deletar_str = partes[1:] # Pega todos os IDs: ['1', 'e', '2']
+                    ids_string = partes[1] # "1,2,3" ou "1, 2, 3"
                     
+                    # Limpa espaços em volta dos IDs e separa pela vírgula
+                    ids_para_deletar_str = [id_str.strip() for id_str in ids_string.split(',')]
+                    
+                    if not ids_para_deletar_str or all(s == '' for s in ids_para_deletar_str):
+                        raise ValueError("Formato incorreto, nenhum ID fornecido.")
+
                     ids_deletados_sucesso = []
                     ids_falhados = []
                     
                     # Loop por cada ID/palavra fornecido
                     for id_str in ids_para_deletar_str:
+                        if not id_str: continue # Pula vírgulas extras (ex: 1,,2)
                         try:
                             # Tenta converter para número
                             id_local = int(id_str)
@@ -241,15 +248,14 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                     if not resposta: # Se o usuário digitou algo como "/deletar e"
                         resposta = "❌ Nenhum ID válido foi processado."
 
-                except Exception as e:
+                except (IndexError, ValueError) as e:
                     print(f"ERRO no /deletar: {e}")
-                    resposta = "❌ Uso: <code>/deletar [ID1] [ID2] ...</code> (separados por espaço)."
+                    # <<< MUDANÇA AQUI (AJUDA DO /DELETAR) ---
+                    resposta = "❌ Uso: <code>/deletar [ID1],[ID2]...</code> (separados por vírgula)."
 
             # --- LÓGICA DO /ZERARTUDO ---
-            # ... (Resto do código continua igual)
-            # --- LÓGICA DO /ZERARTUDO (Sem mudança) ---
-            elif texto_lower.startswith("/zerartudo"):
-                partes = texto.split()
+            elif comando_limpo.startswith("zerartudo"):
+                partes = comando_limpo.split()
                 if len(partes) == 2 and partes[1] == "confirmar":
                     num_deletados = db.query(Gasto).filter(Gasto.user_id == user_id).delete()
                     db.commit()
@@ -257,7 +263,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                 else:
                     resposta = "⚠️ <b>Atenção!</b> Apagará TODOS os SEUS gastos.\nEnvie <code>/zerartudo confirmar</code>"
 
-            # --- LÓGICA DE SALVAR NOVO GASTO (CALCULA ID LOCAL) ---
+            # --- LÓGICA DE SALVAR NOVO GASTO ---
             else:
                 try:
                     # (Parser de aspas)
@@ -286,19 +292,16 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
 
                     if not categoria: raise ValueError("Categoria vazia")
 
-                    # --- (NOVA LÓGICA DE ID LOCAL) ---
-                    # 1. Encontra o ID local mais alto para este usuário
+                    # --- (Lógica de ID Local) ---
                     ultimo_id_local_obj = db.query(func.max(Gasto.id_local_usuario)).filter(Gasto.user_id == user_id).scalar()
-                    
-                    # 2. Calcula o novo ID
                     novo_id_local = 1
                     if ultimo_id_local_obj is not None:
                         novo_id_local = ultimo_id_local_obj + 1
-                    # --- FIM DA LÓGICA DE ID LOCAL ---
+                    # --- FIM ---
 
                     novo_gasto = Gasto(
                         user_id=user_id,
-                        id_local_usuario=novo_id_local, # <<< CAMPO ADICIONADO
+                        id_local_usuario=novo_id_local,
                         valor=valor_float,
                         categoria=categoria.lower(),
                         descricao=descricao
@@ -307,7 +310,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                     db.commit()
                     db.refresh(novo_gasto)
 
-                    resposta = f"✅ Gasto salvo!\n<b>ID: {novo_gasto.id_local_usuario}</b>\n<b>Valor:</b> R$ {valor_float:.2f}\n<b>Categoria:</b> {categoria.lower()}" # Mostra o ID local
+                    resposta = f"✅ Gasto salvo!\n<b>ID: {novo_gasto.id_local_usuario}</b>\n<b>Valor:</b> R$ {valor_float:.2f}\n<b>Categoria:</b> {categoria.lower()}"
                     
                     if aviso_aspas and resposta.startswith("✅"):
                          aviso_aspas_texto = (f"⚠️ Categoria '{categoria}' salva como palavra única.\n"
@@ -337,7 +340,3 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
 
     print("--------------------------------------------------")
     return {"status": "ok"}
-
-
-
-
