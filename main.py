@@ -190,30 +190,63 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
                             resposta += f"⚠️ Erro ao exibir Gasto ID {gasto.id}\n"
                 resposta += "\n(Mostrando os últimos 5)"
 
-            # --- LÓGICA DO /DELETAR (USA ID LOCAL) ---
-            elif texto_lower.startswith("/deletar"):
+         # --- LÓGICA DO /DELETAR (COM MÚLTIPLOS IDs) ---
+            elif comando_limpo.startswith("deletar"):
                 try:
-                    partes = texto.split()
-                    if len(partes) != 2: raise ValueError("Formato incorreto")
-                    id_local_para_deletar = int(partes[1])
+                    partes = comando_limpo.split()
+                    if len(partes) < 2: # Precisa ter pelo menos um ID
+                        raise ValueError("Formato incorreto, faltou o ID")
                     
-                    # <<< BUSCA PELO ID LOCAL E USER_ID >>>
-                    gasto = db.query(Gasto).filter(
-                        Gasto.id_local_usuario == id_local_para_deletar, 
-                        Gasto.user_id == user_id
-                    ).first()
+                    ids_para_deletar_str = partes[1:] # Pega todos os IDs: ['1', 'e', '2']
+                    
+                    ids_deletados_sucesso = []
+                    ids_falhados = []
+                    
+                    # Loop por cada ID/palavra fornecido
+                    for id_str in ids_para_deletar_str:
+                        try:
+                            # Tenta converter para número
+                            id_local = int(id_str)
+                            
+                            # Busca o gasto PELO ID LOCAL E USER_ID
+                            gasto = db.query(Gasto).filter(
+                                Gasto.id_local_usuario == id_local, 
+                                Gasto.user_id == user_id
+                            ).first()
 
-                    if gasto:
-                        valor_gasto = gasto.valor
-                        db.delete(gasto)
+                            if gasto:
+                                db.delete(gasto)
+                                ids_deletados_sucesso.append(id_str) # Salva o ID como string
+                            else:
+                                ids_falhados.append(id_str) # ID não encontrado
+
+                        except ValueError:
+                            # Se a parte não for um número (ex: a palavra "e")
+                            ids_falhados.append(id_str)
+                    
+                    # Confirma todas as exclusões no banco
+                    if ids_deletados_sucesso:
                         db.commit()
-                        resposta = f"✅ Seu gasto <b>ID {id_local_para_deletar}</b> (R$ {valor_gasto:.2f}) foi deletado."
-                    else:
-                        resposta = f"❌ Gasto com <b>ID {id_local_para_deletar}</b> não encontrado ou não pertence a você."
 
-                except (IndexError, ValueError):
-                    resposta = "❌ Uso: <code>/deletar [NÚMERO_ID]</code> (veja IDs com /listar)"
+                    # --- Monta a resposta final ---
+                    resposta = ""
+                    if ids_deletados_sucesso:
+                        ids_str = ", ".join(ids_deletados_sucesso)
+                        resposta += f"✅ Gastos com IDs locais <b>{ids_str}</b> foram deletados.\n"
+                    
+                    if ids_falhados:
+                        ids_str = ", ".join(ids_falhados)
+                        resposta += f"❌ Os seguintes IDs/palavras não foram encontrados ou são inválidos: <b>{ids_str}</b>."
+                    
+                    if not resposta: # Se o usuário digitou algo como "/deletar e"
+                        resposta = "❌ Nenhum ID válido foi processado."
 
+                except Exception as e:
+                    print(f"ERRO no /deletar: {e}")
+                    resposta = "❌ Uso: <code>/deletar [ID1] [ID2] ...</code> (separados por espaço)."
+
+            # --- LÓGICA DO /ZERARTUDO ---
+            # ... (Resto do código continua igual)
             # --- LÓGICA DO /ZERARTUDO (Sem mudança) ---
             elif texto_lower.startswith("/zerartudo"):
                 partes = texto.split()
@@ -304,6 +337,7 @@ async def webhook(update: Update, db: Session = Depends(get_db)):
 
     print("--------------------------------------------------")
     return {"status": "ok"}
+
 
 
 
